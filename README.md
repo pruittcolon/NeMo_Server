@@ -63,7 +63,9 @@ cd ~/Desktop/Nemo_Server
 4. Run `pytest tests/test_speaker_isolation.py` and `tests/test_security_comprehensive.sh` as part of CI before deployment.
 
 ### 🔐 **Speaker Isolation**
+*To be completed*
 - **100% Data Separation**: Users see only their speaker's transcripts and analysis
+*To be completed*
 - **Admin Override**: Admin users can view all speakers
 - **Secure by Default**: Backend SQL filtering + frontend UI hiding
 - **Job Ownership**: Analysis jobs tracked by creator
