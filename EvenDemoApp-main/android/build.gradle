@@ -1,0 +1,52 @@
+buildscript {
+    ext.kotlin_version = '1.9.23' // keep in sync with your Kotlin plugin
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // Flutter manages AGP; don't add it here.
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = '../build'
+
+subprojects {
+    // put every subproject's build output under ../build/<module>
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+
+    // Java 17 bytecode everywhere
+    tasks.withType(JavaCompile).configureEach {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+        options.release = 17
+    }
+
+    // Kotlin 17 bytecode everywhere
+    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+        kotlinOptions {
+            jvmTarget = '17'
+        }
+    }
+
+    // If Android extension is present, also set compileOptions
+    afterEvaluate {
+        def androidExt = extensions.findByName('android')
+        if (androidExt != null && androidExt.hasProperty('compileOptions')) {
+            androidExt.compileOptions.sourceCompatibility = JavaVersion.VERSION_17
+            androidExt.compileOptions.targetCompatibility = JavaVersion.VERSION_17
+        }
+    }
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

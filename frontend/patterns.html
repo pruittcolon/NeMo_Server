@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Server - Patterns</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        
+        <div class="flex">
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Communication Patterns</h1>
+      <p class="text-muted">AI-detected patterns in conversation behavior</p>
+    </section>
+
+    <!-- Time Filter -->
+    <section class="fade-in-up delay-100" style="margin-bottom: 2rem;">
+      <div style="text-align: center;">
+        <div id="time-filter" style="display: inline-flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;">
+          <span class="chip active" data-period="today">Today</span>
+          <span class="chip" data-period="week">This Week</span>
+          <span class="chip" data-period="month">This Month</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pattern Stats -->
+    <section class="grid grid-3 fade-in-up delay-200" style="margin-bottom: 3rem;">
+      <div class="stat-card">
+        <i data-lucide="trending-up" style="width: 32px; height: 32px; color: var(--primary); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="patterns-detected">0</div>
+        <div class="stat-label">Patterns Detected</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="clock" style="width: 32px; height: 32px; color: var(--success); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="peak-time">--:--</div>
+        <div class="stat-label">Peak Activity Time</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="message-square" style="width: 32px; height: 32px; color: var(--warning); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="avg-length">0</div>
+        <div class="stat-label">Avg Words/Segment</div>
+      </div>
+    </section>
+
+    <!-- Charts -->
+    <section class="grid grid-2 fade-in-up delay-300" style="margin-bottom: 2rem;">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Activity by Hour</h3>
+        <canvas id="activity-chart" style="max-height: 300px;"></canvas>
+      </div>
+      
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Speaker Distribution</h3>
+        <canvas id="speaker-chart" style="max-height: 300px;"></canvas>
+      </div>
+    </section>
+
+    <!-- Detected Patterns -->
+    <section class="fade-in-up delay-400">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Detected Patterns</h3>
+        <div id="patterns-list">
+          <div class="skeleton" style="height: 80px; margin-bottom: 1rem;"></div>
+          <div class="skeleton" style="height: 80px;"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    lucide.createIcons();
+
+    let currentPeriod = 'today';
+    let activityChart = null;
+    let speakerChart = null;
+
+    // Load patterns
+    async function loadPatterns() {
+      try {
+        const patterns = await api.getPatterns(currentPeriod);
+        
+        if (patterns) {
+          updateStats(patterns);
+          updateCharts(patterns);
+          displayPatterns(patterns);
+        }
+      } catch (error) {
+        console.error('Failed to load patterns:', error);
+        showToast('Error', 'Failed to load pattern data', 'error');
+      }
+    }
+
+    // Update stats
+    function updateStats(patterns) {
+      document.getElementById('patterns-detected').textContent = patterns.total_patterns || 0;
+      document.getElementById('peak-time').textContent = patterns.peak_hour ? `${patterns.peak_hour}:00` : '--:--';
+      document.getElementById('avg-length').textContent = patterns.avg_words || 0;
+    }
+
+    // Update charts
+    function updateCharts(patterns) {
+      // Activity by hour
+      const activityCtx = document.getElementById('activity-chart').getContext('2d');
+      if (activityChart) activityChart.destroy();
+      
+      const hours = Array.from({length: 24}, (_, i) => `${i}:00`);
+      const activityData = Array.from({length: 24}, () => Math.floor(Math.random() * 50));
+      
+      activityChart = new Chart(activityCtx, {
+        type: 'bar',
+        data: {
+          labels: hours,
+          datasets: [{
+            label: 'Conversations',
+            data: activityData,
+            backgroundColor: 'var(--primary)',
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {
+            legend: { display: false }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { color: 'var(--text-tertiary)' },
+              grid: { color: 'var(--glass-border)' }
+            },
+            x: {
+              ticks: { color: 'var(--text-tertiary)', maxRotation: 45, minRotation: 45 },
+              grid: { display: false }
+            }
+          }
+        }
+      });
+      
+      // Speaker distribution
+      const speakerCtx = document.getElementById('speaker-chart').getContext('2d');
+      if (speakerChart) speakerChart.destroy();
+      
+      const speakers = ['SPK_00', 'SPK_01', 'SPK_02', 'SPK_03'];
+      const speakerData = speakers.map(() => Math.floor(Math.random() * 100));
+      
+      speakerChart = new Chart(speakerCtx, {
+        type: 'pie',
+        data: {
+          labels: speakers,
+          datasets: [{
+            data: speakerData,
+            backgroundColor: speakers.map(s => getSpeakerColor(s))
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: { color: 'var(--text-primary)' }
+            }
+          }
+        }
+      });
+    }
+
+    // Display patterns
+    function displayPatterns(patterns) {
+      const list = document.getElementById('patterns-list');
+      list.innerHTML = '';
+      
+      const mockPatterns = [
+        { type: 'Frequent Topic', description: 'Discussions about "project" appear 15x more than average', confidence: 0.92 },
+        { type: 'Speech Pattern', description: 'Speaker 1 uses more positive language in mornings', confidence: 0.87 },
+        { type: 'Conversation Length', description: 'Conversations average 3.5 minutes longer on Fridays', confidence: 0.78 }
+      ];
+      
+      mockPatterns.forEach((pattern, index) => {
+        const item = document.createElement('div');
+        item.className = 'card fade-in-up';
+        item.style.animationDelay = `${index * 100}ms`;
+        item.style.marginBottom = '1rem';
+        
+        item.innerHTML = `
+          <div class="card-header">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <i data-lucide="zap" style="width: 20px; height: 20px; color: var(--primary);"></i>
+              <strong>${pattern.type}</strong>
+            </div>
+            <span class="badge badge-primary">${Math.round(pattern.confidence * 100)}% confidence</span>
+          </div>
+          <div class="card-body">
+            ${pattern.description}
+          </div>
+        `;
+        
+        list.appendChild(item);
+      });
+      
+      lucide.createIcons();
+    }
+
+    // Time filter
+    document.querySelectorAll('[data-period]').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('[data-period]').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        currentPeriod = chip.dataset.period;
+        loadPatterns();
+      });
+    });
+
+    // Initial load
+    loadPatterns();
+  </script>
+
+</body>
+</html>
+

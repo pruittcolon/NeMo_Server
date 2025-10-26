@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Nemo Server - Real-time Transcription Dashboard">
+  
+  <!-- Security Headers -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss:; img-src 'self' data: https:;">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="DENY">
+  <meta http-equiv="X-XSS-Protection" content="1; mode=block">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  
+  <title>Nemo Server - Live Dashboard</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- Stylesheets -->
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <!-- Scripts -->
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <!-- Header -->
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <!-- Logo -->
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <!-- Navigation -->
+        <nav class="nav">
+          <a href="index.html" class="nav-link active">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        
+        <!-- Actions -->
+        <div class="flex" style="gap: 1rem; align-items: center;">
+          <span id="current-user" style="color: var(--text-secondary); font-size: 0.9rem;"></span>
+          <button id="logout-btn" class="glass-button" style="display: none;" title="Logout">
+            <i data-lucide="log-out" style="width: 18px; height: 18px;"></i>
+          </button>
+          <button class="glass-button" data-toggle-theme title="Toggle Theme">
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <!-- Hero Section -->
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 3rem; margin-bottom: 1rem; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+        Live Transcription Dashboard
+      </h1>
+      <p class="text-muted" style="font-size: 1.125rem; max-width: 600px; margin: 0 auto;">
+        Real-time audio transcriptions from your connected devices with speaker identification and emotion analysis.
+      </p>
+    </section>
+
+    <!-- Stats Grid -->
+    <section class="grid grid-3 fade-in-up delay-100" style="margin-bottom: 3rem;">
+      <!-- Total Transcriptions -->
+      <div class="stat-card hover-lift">
+        <i data-lucide="file-text" style="width: 32px; height: 32px; color: var(--primary); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="total-transcriptions">0</div>
+        <div class="stat-label">Total Transcriptions</div>
+      </div>
+      
+      <!-- Active Speakers -->
+      <div class="stat-card hover-lift">
+        <i data-lucide="users" style="width: 32px; height: 32px; color: var(--success); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="active-speakers">0</div>
+        <div class="stat-label">Active Speakers</div>
+      </div>
+      
+      <!-- Processing Time -->
+      <div class="stat-card hover-lift">
+        <i data-lucide="zap" style="width: 32px; height: 32px; color: var(--warning); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="avg-latency">0s</div>
+        <div class="stat-label">Avg Processing Time</div>
+      </div>
+    </section>
+
+    <!-- Live Feed Section -->
+    <section class="fade-in-up delay-200">
+      <div class="glass-card">
+        <div class="flex-between" style="margin-bottom: 2rem;">
+          <div>
+            <h2 style="margin: 0;">Live Transcription Feed</h2>
+            <p class="text-muted" style="margin: 0.5rem 0 0 0; font-size: 0.875rem;">
+              Auto-refreshes every 2 seconds
+            </p>
+          </div>
+          <button class="btn btn-primary" onclick="loadLatestTranscription()">
+            <i data-lucide="refresh-cw" style="width: 16px; height: 16px;"></i>
+            Refresh Now
+          </button>
+        </div>
+        
+        <!-- Transcription Items Container -->
+        <div id="transcription-feed">
+          <!-- Loading skeleton -->
+          <div class="skeleton" style="height: 150px; margin-bottom: 1rem;"></div>
+          <div class="skeleton" style="height: 150px; margin-bottom: 1rem;"></div>
+          <div class="skeleton" style="height: 150px;"></div>
+        </div>
+        
+        <!-- Empty State -->
+        <div id="empty-state" class="hidden" style="text-align: center; padding: 3rem 0;">
+          <i data-lucide="mic-off" style="width: 64px; height: 64px; color: var(--text-tertiary); margin-bottom: 1rem;"></i>
+          <h3>No Transcriptions Yet</h3>
+          <p class="text-muted">Start speaking or upload audio to see transcriptions here.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick Actions -->
+    <section class="grid grid-2 fade-in-up delay-300" style="margin-top: 2rem;">
+      <!-- Recent Speakers -->
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Recent Speakers</h3>
+        <div id="recent-speakers" class="speaker-grid">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+      
+      <!-- Quick Links -->
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Quick Actions</h3>
+        <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+          <a href="search.html" class="btn btn-ghost" style="justify-content: flex-start;">
+            <i data-lucide="search" style="width: 18px; height: 18px;"></i>
+            Search Transcripts
+          </a>
+          <a href="emotions.html" class="btn btn-ghost" style="justify-content: flex-start;">
+            <i data-lucide="heart" style="width: 18px; height: 18px;"></i>
+            View Emotion Analysis
+          </a>
+          <a href="memories.html" class="btn btn-ghost" style="justify-content: flex-start;">
+            <i data-lucide="database" style="width: 18px; height: 18px;"></i>
+            Browse Memories
+          </a>
+          <a href="gemma.html" class="btn btn-ghost" style="justify-content: flex-start;">
+            <i data-lucide="sparkles" style="width: 18px; height: 18px;"></i>
+            AI Insights
+          </a>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer style="text-align: center; padding: 2rem 0; color: var(--text-tertiary); font-size: 0.875rem;">
+    <p>Nemo Server &copy; 2024 | GPU-Accelerated Transcription</p>
+  </footer>
+
+  <!-- Page-specific Script -->
+  <script>
+    // Initialize Lucide icons
+    lucide.createIcons();
+
+    let transcriptionCache = [];
+
+    // Load latest transcription
+    async function loadLatestTranscription() {
+      try {
+        const result = await api.getLatest();
+        
+        if (result && result.answer) {
+          updateTranscriptionFeed([result]);
+        } else {
+          document.getElementById('transcription-feed').innerHTML = '';
+          document.getElementById('empty-state').classList.remove('hidden');
+        }
+      } catch (error) {
+        console.error('Failed to load transcription:', error);
+        showToast('Error', 'Failed to load latest transcription', 'error');
+      }
+    }
+
+    // Update transcription feed
+    function updateTranscriptionFeed(transcriptions) {
+      const feedEl = document.getElementById('transcription-feed');
+      const emptyState = document.getElementById('empty-state');
+      
+      if (!transcriptions || transcriptions.length === 0) {
+        emptyState.classList.remove('hidden');
+        feedEl.innerHTML = '';
+        return;
+      }
+      
+      emptyState.classList.add('hidden');
+      
+      // Clear feed
+      feedEl.innerHTML = '';
+      
+      // Add transcription items
+      transcriptions.forEach((item, index) => {
+        const segments = item.payload?.segments || [];
+        
+        segments.forEach(segment => {
+          const itemEl = document.createElement('div');
+          itemEl.className = 'transcription-item fade-in-up';
+          itemEl.style.animationDelay = `${index * 100}ms`;
+          
+          // Speaker avatar
+          const avatar = createSpeakerAvatar(segment.speaker || 'UNKNOWN');
+          
+          // Emotion badge
+          const emotionBadge = segment.emotion 
+            ? createEmotionBadge(segment.emotion, segment.emotion_confidence)
+            : null;
+          
+          itemEl.innerHTML = `
+            <div class="transcription-header">
+              <div class="transcription-speaker">
+                ${avatar.outerHTML}
+                <span>${escapeHTML(segment.speaker || 'Unknown Speaker')}</span>
+              </div>
+              <span class="transcription-time">
+                ${formatDuration(segment.start)} - ${formatDuration(segment.end)}
+              </span>
+            </div>
+            <div class="transcription-text">
+              ${escapeHTML(segment.text)}
+            </div>
+            <div class="transcription-footer">
+              ${emotionBadge ? emotionBadge.outerHTML : ''}
+              <span class="text-muted" style="font-size: 0.75rem;">
+                Duration: ${formatDuration(segment.end - segment.start)}
+              </span>
+            </div>
+          `;
+          
+          feedEl.appendChild(itemEl);
+        });
+      });
+      
+      // Update stats
+      updateStats(transcriptions);
+    }
+
+    // Update statistics
+    function updateStats(transcriptions) {
+      // Total transcriptions
+      document.getElementById('total-transcriptions').textContent = transcriptions.length;
+      
+      // Count unique speakers
+      const speakers = new Set();
+      transcriptions.forEach(t => {
+        const segments = t.payload?.segments || [];
+        segments.forEach(s => speakers.add(s.speaker));
+      });
+      document.getElementById('active-speakers').textContent = speakers.size;
+      
+      // Update recent speakers
+      updateRecentSpeakers(Array.from(speakers));
+    }
+
+    // Update recent speakers
+    function updateRecentSpeakers(speakers) {
+      const speakersEl = document.getElementById('recent-speakers');
+      speakersEl.innerHTML = '';
+      
+      speakers.slice(0, 6).forEach(speakerId => {
+        const card = document.createElement('div');
+        card.className = 'speaker-card hover-lift';
+        
+        const avatar = createSpeakerAvatar(speakerId, 'large');
+        
+        card.innerHTML = `
+          ${avatar.outerHTML}
+          <div class="speaker-name">${escapeHTML(speakerId)}</div>
+        `;
+        
+        speakersEl.appendChild(card);
+      });
+    }
+
+    // Check authentication and setup user display
+    async function checkAuth() {
+      try {
+        const response = await fetch('/api/auth/check', { credentials: 'include' });
+        const data = await response.json();
+        
+        if (!data.valid) {
+          console.warn('[AUTH] Not authenticated, redirecting to login');
+          window.location.href = '/ui/login.html';
+          return false;
+        }
+        
+        // Store user globally
+        window.currentUser = data.user;
+        console.log('[AUTH] Logged in as:', data.user.username, '(role:', data.user.role, ')');
+        
+        // Update user display
+        const userDisplay = document.getElementById('current-user');
+        if (userDisplay) {
+          userDisplay.textContent = `${data.user.username} (${data.user.role})`;
+        }
+        
+        // Show and setup logout button
+        const logoutBtn = document.getElementById('logout-btn');
+        if (logoutBtn) {
+          logoutBtn.style.display = 'flex';
+          logoutBtn.onclick = async () => {
+            await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+            window.location.href = '/ui/login.html';
+          };
+        }
+        
+        // Hide speaker filters for non-admin (if any on this page)
+        if (data.user.role !== 'admin') {
+          document.querySelectorAll('.speaker-filter, .speaker-dropdown, [data-admin-only]').forEach(el => {
+            el.style.display = 'none';
+          });
+        }
+        
+        return true;
+      } catch (error) {
+        console.error('[AUTH] Check failed:', error);
+        window.location.href = '/ui/login.html';
+        return false;
+      }
+    }
+
+    // Initialize page with authentication
+    async function initPage() {
+      // Require authentication
+      const authenticated = await checkAuth();
+      if (!authenticated) return;
+      
+      // Load initial data
+      await Promise.all([
+        loadHealthStatus(),
+        loadLatestTranscription()
+      ]);
+      
+      // Start auto-refresh
+      startAutoRefresh(loadLatestTranscription, 2000);
+    }
+    
+    // Start when DOM ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initPage);
+    } else {
+      initPage();
+    }
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+      stopAutoRefresh();
+    });
+  </script>
+
+</body>
+</html>
+
+

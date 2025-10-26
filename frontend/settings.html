@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Server - Settings</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link active">Settings</a>
+        </nav>
+        
+        <div class="flex">
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Settings</h1>
+      <p class="text-muted">Configure Nemo Server preferences and connections</p>
+    </section>
+
+    <!-- Settings Sections -->
+    <div style="max-width: 800px; margin: 0 auto;">
+      
+      <!-- API Connection -->
+      <section class="glass-card fade-in-up delay-100" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.5rem;">
+          <i data-lucide="server" style="width: 20px; height: 20px; display: inline-block; vertical-align: middle;"></i>
+          API Connection
+        </h3>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Server URL</label>
+          <input type="text" class="input" id="api-url" value="http://localhost:8000">
+        </div>
+        <button class="btn btn-primary" onclick="testConnection()">
+          <i data-lucide="activity" style="width: 16px; height: 16px;"></i>
+          Test Connection
+        </button>
+      </section>
+
+      <!-- Appearance -->
+      <section class="glass-card fade-in-up delay-200" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.5rem;">
+          <i data-lucide="palette" style="width: 20px; height: 20px; display: inline-block; vertical-align: middle;"></i>
+          Appearance
+        </h3>
+        <div style="display: flex; gap: 1rem; align-items: center;">
+          <label style="font-weight: 600;">Theme:</label>
+          <button class="btn btn-ghost" onclick="setTheme('dark')">
+            <i data-lucide="moon" style="width: 16px; height: 16px;"></i>
+            Dark
+          </button>
+          <button class="btn btn-ghost" onclick="setTheme('light')">
+            <i data-lucide="sun" style="width: 16px; height: 16px;"></i>
+            Light
+          </button>
+        </div>
+      </section>
+
+      <!-- Transcription -->
+      <section class="glass-card fade-in-up delay-300" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.5rem;">
+          <i data-lucide="mic" style="width: 20px; height: 20px; display: inline-block; vertical-align: middle;"></i>
+          Transcription Settings
+        </h3>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="auto-refresh" checked>
+            <span>Auto-refresh transcriptions (every 2s)</span>
+          </label>
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="show-timestamps" checked>
+            <span>Show timestamps</span>
+          </label>
+        </div>
+        <div>
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="show-emotions" checked>
+            <span>Show emotion badges</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- Notifications -->
+      <section class="glass-card fade-in-up delay-400" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.5rem;">
+          <i data-lucide="bell" style="width: 20px; height: 20px; display: inline-block; vertical-align: middle;"></i>
+          Notifications
+        </h3>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="notify-new-transcript">
+            <span>Notify on new transcription</span>
+          </label>
+        </div>
+        <div>
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="notify-errors" checked>
+            <span>Notify on errors</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- Storage -->
+      <section class="glass-card fade-in-up delay-500" style="margin-bottom: 2rem;">
+        <h3 style="margin-bottom: 1.5rem;">
+          <i data-lucide="database" style="width: 20px; height: 20px; display: inline-block; vertical-align: middle;"></i>
+          Data Management
+        </h3>
+        <div style="display: flex; gap: 1rem;">
+          <button class="btn btn-ghost" onclick="clearCache()">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+            Clear Cache
+          </button>
+          <button class="btn btn-ghost" onclick="exportSettings()">
+            <i data-lucide="download" style="width: 16px; height: 16px;"></i>
+            Export Settings
+          </button>
+        </div>
+      </section>
+
+      <!-- About -->
+      <section class="glass-card fade-in-up delay-600">
+        <h3 style="margin-bottom: 1.5rem;">
+          <i data-lucide="info" style="width: 20px; height: 20px; display: inline-block; vertical-align: middle;"></i>
+          About
+        </h3>
+        <div style="color: var(--text-secondary); line-height: 1.8;">
+          <p><strong>Version:</strong> 3.2 REFACTORED</p>
+          <p><strong>ASR Model:</strong> Parakeet-CTC-1.1B (GPU)</p>
+          <p><strong>AI Model:</strong> Gemma 3 4B (GPU)</p>
+          <p><strong>Emotion Model:</strong> DistilRoBERTa (CPU)</p>
+          <p><strong>Speaker Model:</strong> TitaNet Large (CPU)</p>
+          <p><a href="about.html" style="color: var(--primary);">View System Information →</a></p>
+        </div>
+      </section>
+
+    </div>
+
+  </main>
+
+  <script>
+    lucide.createIcons();
+
+    // Load saved settings
+    function loadSettings() {
+      document.getElementById('api-url').value = api.getBaseURL();
+      document.getElementById('auto-refresh').checked = loadFromStorage('auto-refresh', true);
+      document.getElementById('show-timestamps').checked = loadFromStorage('show-timestamps', true);
+      document.getElementById('show-emotions').checked = loadFromStorage('show-emotions', true);
+      document.getElementById('notify-new-transcript').checked = loadFromStorage('notify-new-transcript', false);
+      document.getElementById('notify-errors').checked = loadFromStorage('notify-errors', true);
+    }
+
+    // Save settings on change
+    document.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+      checkbox.addEventListener('change', (e) => {
+        saveToStorage(e.target.id, e.target.checked);
+        showToast('Saved', 'Settings updated', 'success', 1000);
+      });
+    });
+
+    document.getElementById('api-url').addEventListener('change', (e) => {
+      api.setBaseURL(e.target.value);
+      saveToStorage('api-url', e.target.value);
+      showToast('Saved', 'API URL updated', 'success');
+    });
+
+    // Test connection
+    async function testConnection() {
+      const url = document.getElementById('api-url').value;
+      api.setBaseURL(url);
+      
+      showToast('Testing', 'Connecting to server...', 'info', 2000);
+      
+      const isConnected = await api.testConnection();
+      
+      if (isConnected) {
+        showToast('Success', 'Connected to server!', 'success');
+      } else {
+        showToast('Error', 'Failed to connect to server', 'error');
+      }
+    }
+
+    // Set theme
+    function setTheme(theme) {
+      document.body.classList.toggle('light-mode', theme === 'light');
+      saveToStorage('theme', theme);
+      showToast('Theme Changed', `Switched to ${theme} mode`, 'success', 1500);
+    }
+
+    // Clear cache
+    function clearCache() {
+      api.clearCache();
+      showToast('Success', 'Cache cleared', 'success');
+    }
+
+    // Export settings
+    function exportSettings() {
+      const settings = {
+        apiUrl: document.getElementById('api-url').value,
+        autoRefresh: document.getElementById('auto-refresh').checked,
+        showTimestamps: document.getElementById('show-timestamps').checked,
+        showEmotions: document.getElementById('show-emotions').checked,
+        notifyNewTranscript: document.getElementById('notify-new-transcript').checked,
+        notifyErrors: document.getElementById('notify-errors').checked,
+        theme: document.body.classList.contains('light-mode') ? 'light' : 'dark'
+      };
+      
+      const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'whisperserver-settings.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      showToast('Exported', 'Settings exported successfully', 'success');
+    }
+
+    // Initialize
+    loadSettings();
+  </script>
+
+</body>
+</html>
+

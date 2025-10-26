@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  nemo-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    
+    image: nemo-server:latest
+    
+    container_name: nemo_server
+    
+    # GPU Configuration
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+        reservations:
+          memory: 8G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=info
+      - INSTANCE_DIR=/app/instance
+      - DB_PATH=/app/instance/memories.db
+      - FAISS_INDEX_PATH=/app/instance/faiss_index.bin
+    
+    ports:
+      - "8000:8000"
+    
+    volumes:
+      # HuggingFace cache (writable for model downloads)
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      
+      # Local models directory (contains Gemma GGUF)
+      - ../models:/app/models
+      
+      # Instance directory (database, uploads, cache)
+      - ../instance:/app/instance
+      
+      # Application data
+      - ../data:/app/data
+      
+      # Logs
+      - ../logs:/app/logs
+      
+      # Source code (for hot-reload during development)
+      - ../src:/app/src
+      
+      # Frontend (for hot-reload during development)
+      - ../frontend:/app/frontend
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+    name: nemo_network

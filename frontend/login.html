@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In - Nemo Server</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Stylesheets -->
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: var(--spacing-xl);
+    }
+    
+    .login-container {
+      width: 100%;
+      max-width: 450px;
+    }
+    
+    .login-card {
+      background: var(--glass);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-2xl);
+      padding: var(--spacing-2xl);
+      box-shadow: var(--shadow-glass);
+    }
+    
+    .login-header {
+      text-align: center;
+      margin-bottom: var(--spacing-2xl);
+    }
+    
+    .login-logo {
+      font-size: 3rem;
+      margin-bottom: var(--spacing-md);
+    }
+    
+    .login-title {
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: var(--spacing-sm);
+      background: var(--gradient-primary);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .login-subtitle {
+      color: var(--text-secondary);
+      font-size: 0.9375rem;
+    }
+    
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-lg);
+    }
+    
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+    }
+    
+    .form-label {
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .form-input {
+      width: 100%;
+      padding: var(--spacing-md);
+      background: var(--glass-dark);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 1rem;
+      transition: all var(--transition-base);
+    }
+    
+    .form-input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+    
+    .form-input::placeholder {
+      color: var(--text-tertiary);
+    }
+    
+    .login-button {
+      width: 100%;
+      padding: var(--spacing-md) var(--spacing-lg);
+      background: var(--gradient-primary);
+      border: none;
+      border-radius: var(--radius-lg);
+      color: white;
+      font-weight: 700;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all var(--transition-base);
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .login-button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(99, 102, 241, 0.6);
+    }
+    
+    .login-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    
+    .error-message {
+      padding: var(--spacing-md);
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-radius: var(--radius-md);
+      color: var(--danger);
+      font-size: 0.875rem;
+      display: none;
+    }
+    
+    .error-message.show {
+      display: block;
+      animation: shake 0.3s ease-in-out;
+    }
+    
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-10px); }
+      75% { transform: translateX(10px); }
+    }
+    
+    .login-footer {
+      text-align: center;
+      margin-top: var(--spacing-xl);
+      color: var(--text-tertiary);
+      font-size: 0.8125rem);
+    }
+    
+    .loading-spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-left: var(--spacing-sm);
+    }
+  </style>
+</head>
+<body>
+  
+  <div class="login-container fade-in-up">
+    <div class="login-card">
+      <!-- Header -->
+      <div class="login-header">
+        <div class="login-logo">🎙️</div>
+        <h1 class="login-title">Nemo Server</h1>
+        <p class="login-subtitle">Conversation Intelligence Console</p>
+      </div>
+      
+      <!-- Error Message -->
+      <div id="error-message" class="error-message"></div>
+      
+      <!-- Login Form -->
+      <form id="login-form" class="login-form">
+        <div class="form-group">
+          <label for="username" class="form-label">Username</label>
+          <input 
+            type="text" 
+            id="username" 
+            name="username"
+            class="form-input" 
+            placeholder="Enter your username"
+            required
+            autocomplete="username"
+            autofocus
+          >
+        </div>
+        
+        <div class="form-group">
+          <label for="password" class="form-label">Password</label>
+          <input 
+            type="password" 
+            id="password" 
+            name="password"
+            class="form-input" 
+            placeholder="Enter your password"
+            required
+            autocomplete="current-password"
+          >
+        </div>
+        
+        <button type="submit" id="login-button" class="login-button">
+          Sign In
+          <span id="loading-spinner" class="loading-spinner" style="display: none;"></span>
+        </button>
+      </form>
+      
+      <!-- Footer -->
+      <div class="login-footer">
+        <p>GPU-Accelerated Transcription | Secure Access</p>
+        <p style="margin-top: var(--spacing-sm); font-size: 0.75rem;">
+          Need access? Ask your administrator to provision an account.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script>
+    const form = document.getElementById('login-form');
+    const errorMessage = document.getElementById('error-message');
+    const loginButton = document.getElementById('login-button');
+    const loadingSpinner = document.getElementById('loading-spinner');
+    
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      
+      // Hide error
+      errorMessage.classList.remove('show');
+      
+      // Show loading
+      loginButton.disabled = true;
+      loadingSpinner.style.display = 'inline-block';
+      
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include',  // Required for cookie-based sessions
+          body: JSON.stringify({ username, password })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+          // Success! Redirect to dashboard
+          window.location.href = '/ui/index.html';
+        } else {
+          // Show error
+          errorMessage.textContent = data.message || 'Invalid credentials. Please try again.';
+          errorMessage.classList.add('show');
+        }
+      } catch (error) {
+        console.error('Login error:', error);
+        errorMessage.textContent = 'Connection error. Please try again.';
+        errorMessage.classList.add('show');
+      } finally {
+        // Hide loading
+        loginButton.disabled = false;
+        loadingSpinner.style.display = 'none';
+      }
+    });
+    
+    // Clear error on input
+    document.getElementById('username').addEventListener('input', () => {
+      errorMessage.classList.remove('show');
+    });
+    document.getElementById('password').addEventListener('input', () => {
+      errorMessage.classList.remove('show');
+    });
+  </script>
+
+</body>
+</html>

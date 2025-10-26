@@ -1,0 +1,103 @@
+version: '3.8'
+
+# WhisperServer REFACTORED - Single Container Architecture
+#
+# Simplified from 4-service to 1-service for easier deployment
+# GPU Strategy: ASR uses ~2GB, Gemma gets remainder (~4GB)
+#
+# Services:
+# 1. whisperserver-refactored - All-in-one (FastAPI + Next.js Web UI)
+#    - ASR (Parakeet) on GPU (~2GB)
+#    - Gemma LLM on GPU (remainder)
+#    - All other models on CPU
+
+services:
+  # ==========================================================================
+  # All-in-One Service (Backend + Frontend + GPU)
+  # ==========================================================================
+  whisperserver-refactored:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: whisperserver-refactored:latest
+    container_name: whisperserver_refactored
+    
+    ports:
+      - "8001:8000"  # FastAPI Backend (HTML UI served at /ui/)
+    
+    # GPU Support - NVIDIA Container Toolkit required
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    environment:
+      # GPU Configuration
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=0
+      
+      # Backend Configuration
+      - FASTAPI_HOST=0.0.0.0
+      - FASTAPI_PORT=8000
+      - PYTHONUNBUFFERED=1
+      
+      # Frontend Configuration
+      - NEXT_PUBLIC_API_BASE=http://localhost:8000
+      - NODE_ENV=production
+      
+      # Model Configuration
+      - ASR_MODEL=nvidia/parakeet-ctc-1.1b
+      - ASR_USE_GPU=true
+      - GEMMA_MODEL_PATH=/app/models/gemma-3-4b-it-Q4_K_M.gguf
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - EMOTION_MODEL=j-hartmann/emotion-english-distilroberta-base
+      
+      # Database & Storage
+      - DATABASE_PATH=/app/instance/memory.db
+      - FAISS_INDEX_PATH=/app/instance/faiss_index
+      - UPLOAD_DIR=/app/instance/uploads
+    
+    volumes:
+      # Persistent data
+      - ./instance:/app/instance
+      - ./logs:/app/logs
+      # Share models with original server (read-only to save disk space)
+      - /home/pruittcolon/Downloads/WhisperServer/models:/app/models:ro
+      
+      # Optional: Mount source for development
+      # - ./src:/app/src:ro
+      # - ./frontend:/app/frontend:ro
+    
+    networks:
+      - whisper-network
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Allow time for models to load
+
+# ==========================================================================
+# Networks
+# ==========================================================================
+networks:
+  whisper-network:
+    driver: bridge
+    name: whisper-network
+
+# ==========================================================================
+# Volumes (optional - using bind mounts above)
+# ==========================================================================
+volumes:
+  instance-data:
+    driver: local
+  model-cache:
+    driver: local
+  logs:
+    driver: local

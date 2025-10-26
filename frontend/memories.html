@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Server - Memories</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link active">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        
+        <div class="flex" style="gap: 1rem; align-items: center;">
+          <span id="current-user" style="color: var(--text-secondary); font-size: 0.9rem;"></span>
+          <button id="logout-btn" class="glass-button" style="display: none;" title="Logout">
+            <i data-lucide="log-out" style="width: 18px; height: 18px;"></i>
+          </button>
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Memory Database</h1>
+      <p class="text-muted">Semantic search powered by FAISS vector database</p>
+    </section>
+
+    <!-- Actions -->
+    <section class="fade-in-up delay-100" style="margin-bottom: 2rem;">
+      <div style="display: flex; gap: 1rem; align-items: center; justify-content: space-between;">
+        <div class="search-bar" style="flex: 1;">
+          <i data-lucide="search" class="search-icon"></i>
+          <input 
+            type="text" 
+            class="search-input" 
+            placeholder="Search memories with semantic AI..."
+            id="memory-search"
+            value=""
+          >
+        </div>
+        <button class="btn btn-primary" onclick="showCreateMemoryModal()">
+          <i data-lucide="plus" style="width: 16px; height: 16px;"></i>
+          Create Memory
+        </button>
+      </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="grid grid-3 fade-in-up delay-200" style="margin-bottom: 3rem;">
+      <div class="stat-card">
+        <i data-lucide="database" style="width: 28px; height: 28px; color: var(--primary); margin-bottom: 0.5rem;"></i>
+        <div class="stat-value" id="total-memories">0</div>
+        <div class="stat-label">Total Memories</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="zap" style="width: 28px; height: 28px; color: var(--warning); margin-bottom: 0.5rem;"></i>
+        <div class="stat-value" id="vector-dimensions">384</div>
+        <div class="stat-label">Vector Dimensions</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="target" style="width: 28px; height: 28px; color: var(--success); margin-bottom: 0.5rem;"></i>
+        <div class="stat-value" id="avg-similarity">0.85</div>
+        <div class="stat-label">Avg Similarity Score</div>
+      </div>
+    </section>
+
+    <!-- Memory List -->
+    <section class="fade-in-up delay-300">
+      <div class="glass-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+          <h3 id="results-title">All Memories</h3>
+          <button class="btn btn-primary" onclick="showComprehensiveAnalysis()">
+            <i data-lucide="bar-chart-3" style="width: 16px; height: 16px;"></i>
+            Comprehensive Analysis
+          </button>
+        </div>
+        
+        <div id="memory-list">
+          <div id="loading" class="hidden">
+            <div class="skeleton" style="height: 120px; margin-bottom: 1rem;"></div>
+            <div class="skeleton" style="height: 120px; margin-bottom: 1rem;"></div>
+          </div>
+          
+          <div id="empty-state" class="hidden" style="text-align: center; padding: 3rem 0;">
+            <i data-lucide="inbox" style="width: 64px; height: 64px; color: var(--text-tertiary); margin-bottom: 1rem;"></i>
+            <h3>No Memories Found</h3>
+            <p class="text-muted">Create your first memory to get started</p>
+          </div>
+          
+          <div id="memories-container"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    lucide.createIcons();
+
+    let allMemories = [];
+    let currentQuery = '';
+
+    // Load memories
+    async function loadMemories() {
+      const loading = document.getElementById('loading');
+      const emptyState = document.getElementById('empty-state');
+      const container = document.getElementById('memories-container');
+      
+      loading.classList.remove('hidden');
+      container.innerHTML = '';
+      emptyState.classList.add('hidden');
+      
+      try {
+        console.log('[MEMORIES] Loading memories, currentQuery:', currentQuery);
+        const result = currentQuery 
+          ? await api.searchMemories(currentQuery, 50)
+          : await api.getAllMemories(100);
+        
+        console.log('[MEMORIES] API result:', result);
+        console.log('[MEMORIES] Result type:', typeof result, 'Is array:', Array.isArray(result));
+        
+        // Result is directly an array of memories (not wrapped in object)
+        allMemories = Array.isArray(result) ? result : (result.results || result.memories || []);
+        
+        console.log('[MEMORIES] allMemories length:', allMemories.length);
+        
+        loading.classList.add('hidden');
+        
+        if (allMemories.length === 0) {
+          console.log('[MEMORIES] No memories, showing empty state');
+          emptyState.classList.remove('hidden');
+        } else {
+          console.log('[MEMORIES] Displaying', allMemories.length, 'memories');
+          displayMemories(allMemories);
+          updateStats();
+        }
+      } catch (error) {
+        console.error('[MEMORIES] Failed to load memories:', error);
+        loading.classList.add('hidden');
+        showToast('Error', 'Failed to load memories', 'error');
+      }
+    }
+
+    // Display memories
+    function displayMemories(memories) {
+      const container = document.getElementById('memories-container');
+      container.innerHTML = '';
+      
+      memories.forEach((memory, index) => {
+        const memoryEl = document.createElement('div');
+        memoryEl.className = 'card fade-in-up';
+        memoryEl.style.animationDelay = `${index * 50}ms`;
+        memoryEl.style.marginBottom = '1rem';
+        
+        const similarity = memory.score || memory.similarity || null;
+        
+        memoryEl.innerHTML = `
+          <div class="card-header">
+            <h4 style="margin: 0;">${escapeHTML(memory.title || 'Untitled')}</h4>
+            ${similarity ? `<span class="badge badge-primary">${Math.round(similarity * 100)}% match</span>` : ''}
+          </div>
+          <div class="card-body">
+            ${highlightText(memory.content, currentQuery)}
+          </div>
+          <div class="card-footer">
+            <span class="text-muted" style="font-size: 0.875rem;">
+              ${formatTime(memory.timestamp || memory.created_at)}
+            </span>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="btn btn-ghost" onclick="editMemory('${memory.id}')">
+                <i data-lucide="edit-2" style="width: 14px; height: 14px;"></i>
+                Edit
+              </button>
+              <button class="btn btn-ghost" onclick="deleteMemory('${memory.id}')" style="color: var(--danger);">
+                <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                Delete
+              </button>
+            </div>
+          </div>
+        `;
+        
+        container.appendChild(memoryEl);
+      });
+      
+      lucide.createIcons();
+    }
+
+    // Update stats
+    async function updateStats() {
+      try {
+        const stats = await api.get('/memory/stats');
+        document.getElementById('total-memories').textContent = stats.total_memories || allMemories.length;
+      } catch (error) {
+        document.getElementById('total-memories').textContent = allMemories.length;
+      }
+    }
+
+    // Create memory modal
+    function showCreateMemoryModal() {
+      const modal = showModal('Create New Memory', `
+        <form id="create-memory-form">
+          <div style="margin-bottom: 1rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Title</label>
+            <input type="text" class="input" id="memory-title" placeholder="Memory title..." required>
+          </div>
+          <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Content</label>
+            <textarea class="input" id="memory-content" rows="6" placeholder="Memory content..." required></textarea>
+          </div>
+          <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+            <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Create</button>
+          </div>
+        </form>
+      `);
+      
+      document.getElementById('create-memory-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const title = document.getElementById('memory-title').value;
+        const content = document.getElementById('memory-content').value;
+        
+        try {
+          await api.createMemory(title, content);
+          showToast('Success', 'Memory created successfully', 'success');
+          closeModal();
+          loadMemories();
+        } catch (error) {
+          showToast('Error', 'Failed to create memory', 'error');
+        }
+      });
+    }
+
+    // Edit memory
+    async function editMemory(id) {
+      const memory = allMemories.find(m => m.id === id);
+      if (!memory) return;
+      
+      showModal('Edit Memory', `
+        <form id="edit-memory-form">
+          <input type="hidden" id="edit-memory-id" value="${id}">
+          <div style="margin-bottom: 1rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Title</label>
+            <input type="text" class="input" id="edit-memory-title" value="${escapeHTML(memory.title)}" required>
+          </div>
+          <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Content</label>
+            <textarea class="input" id="edit-memory-content" rows="6" required>${escapeHTML(memory.content)}</textarea>
+          </div>
+          <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+            <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>
+      `);
+      
+      document.getElementById('edit-memory-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const title = document.getElementById('edit-memory-title').value;
+        const content = document.getElementById('edit-memory-content').value;
+        
+        try {
+          await api.updateMemory(id, title, content);
+          showToast('Success', 'Memory updated successfully', 'success');
+          closeModal();
+          loadMemories();
+        } catch (error) {
+          showToast('Error', 'Failed to update memory', 'error');
+        }
+      });
+    }
+
+    // Delete memory
+    async function deleteMemory(id) {
+      if (!confirm('Are you sure you want to delete this memory?')) return;
+      
+      try {
+        await api.deleteMemory(id);
+        showToast('Success', 'Memory deleted successfully', 'success');
+        loadMemories();
+      } catch (error) {
+        showToast('Error', 'Failed to delete memory', 'error');
+      }
+    }
+
+    // Search
+    const searchInput = document.getElementById('memory-search');
+    searchInput.addEventListener('input', debounce(() => {
+      currentQuery = searchInput.value.trim();
+      document.getElementById('results-title').textContent = currentQuery ? `Search Results for "${currentQuery}"` : 'All Memories';
+      loadMemories();
+    }, 500));
+
+    // Comprehensive Analysis
+    function showComprehensiveAnalysis() {
+      window.location.href = 'analysis.html';
+    }
+
+    // Initialize page with authentication
+    async function initPage() {
+      // Enforce authentication
+      const authenticated = await Auth.init({ requireAuth: true });
+      if (!authenticated) return;
+      
+      // Initial load
+      currentQuery = ''; // Ensure no default query
+      loadMemories();
+      updateStats();
+    }
+    
+    // Call on DOM ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initPage);
+    } else {
+      initPage();
+    }
+  </script>
+
+</body>
+</html>
+

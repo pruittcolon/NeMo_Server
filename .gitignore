@@ -1,0 +1,132 @@
+# ==========================================
+# USER DATA & SECRETS
+# ==========================================
+instance/
+.env
+.env.local
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# ==========================================
+# VIRTUAL ENVIRONMENTS
+# ==========================================
+.venv/
+venv/
+env/
+ENV/
+
+# ==========================================
+# MODEL FILES (LARGE - DOWNLOAD SEPARATELY)
+# ==========================================
+models/*.gguf
+models/*.nemo
+models/hf_home/
+models/models--*/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# ==========================================
+# LOGS & CACHE
+# ==========================================
+logs/
+*.log
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# ==========================================
+# DEVELOPMENT & DEBUG
+# ==========================================
+AUTH_DEBUG_BACKUP/
+implement_fixes/
+SOURCE_BACKUP_*/
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ==========================================
+# PERSONAL/SENSITIVE DATA
+# ==========================================
+instance/enrollment/**/*.wav
+instance/enrollment/**/*.npy
+instance/uploads/
+instance/cache/
+*.npy
+
+# ==========================================
+# BUILD & DISTRIBUTION
+# ==========================================
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# ==========================================
+# DOCKER
+# ==========================================
+.dockerignore
+
+# ==========================================
+# OPERATING SYSTEM
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# FLUTTER APP (EvenDemoApp-main)
+# ==========================================
+EvenDemoApp-main/.env
+EvenDemoApp-main/build/
+EvenDemoApp-main/.dart_tool/
+EvenDemoApp-main/.flutter-plugins
+EvenDemoApp-main/.flutter-plugins-dependencies
+EvenDemoApp-main/.packages
+EvenDemoApp-main/pubspec.lock
+
+# Android build artifacts
+EvenDemoApp-main/android/.gradle/
+EvenDemoApp-main/android/app/.cxx/
+EvenDemoApp-main/android/local.properties
+
+# Flutter build artifacts with copied .env
+EvenDemoApp-main/build/app/intermediates/
+EvenDemoApp-main/build/unit_test_assets/
+EvenDemoApp-main/build/flutter_assets/
+
+# ==========================================
+# JUPYTER NOTEBOOKS
+# ==========================================
+.ipynb_checkpoints/
+*.ipynb
+
+# ==========================================
+# TEMPORARY FILES
+# ==========================================
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup

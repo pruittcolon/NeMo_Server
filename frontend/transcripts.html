@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Server - Transcripts</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        
+        <div class="flex" style="gap: 1rem; align-items: center;">
+          <span id="current-user" style="color: var(--text-secondary); font-size: 0.9rem;"></span>
+          <button id="logout-btn" class="glass-button" style="display: none;" title="Logout">
+            <i data-lucide="log-out" style="width: 18px; height: 18px;"></i>
+          </button>
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Full Transcripts</h1>
+      <p class="text-muted">View and export complete conversation transcripts</p>
+    </section>
+
+    <!-- Actions -->
+    <section class="fade-in-up delay-100" style="margin-bottom: 2rem;">
+      <div style="display: flex; gap: 1rem; justify-content: space-between;">
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-primary" onclick="exportTranscript('json')">
+            <i data-lucide="download" style="width: 16px; height: 16px;"></i>
+            Export JSON
+          </button>
+          <button class="btn btn-ghost" onclick="exportTranscript('txt')">
+            <i data-lucide="file-text" style="width: 16px; height: 16px;"></i>
+            Export TXT
+          </button>
+        </div>
+        <div class="flex">
+          <span class="badge badge-success" id="transcript-count">0 transcripts</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Transcript Viewer -->
+    <section class="fade-in-up delay-200">
+      <div class="glass-card">
+        <div id="transcript-viewer">
+          <!-- Loading -->
+          <div id="loading">
+            <div class="skeleton" style="height: 200px; margin-bottom: 1rem;"></div>
+            <div class="skeleton" style="height: 200px;"></div>
+          </div>
+          
+          <!-- Transcript Content -->
+          <div id="transcript-content" class="hidden"></div>
+          
+          <!-- Empty State -->
+          <div id="empty-state" class="hidden" style="text-align: center; padding: 3rem 0;">
+            <i data-lucide="file-x" style="width: 64px; height: 64px; color: var(--text-tertiary); margin-bottom: 1rem;"></i>
+            <h3>No Transcripts Available</h3>
+            <p class="text-muted">Start recording to see transcripts here</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    lucide.createIcons();
+
+    let currentTranscripts = [];
+
+    // Load all transcripts
+    async function loadTranscripts() {
+      const loading = document.getElementById('loading');
+      const content = document.getElementById('transcript-content');
+      const emptyState = document.getElementById('empty-state');
+      
+      loading.classList.remove('hidden');
+      content.classList.add('hidden');
+      emptyState.classList.add('hidden');
+      
+      try {
+        const result = await api.getAllTranscripts(100);
+        currentTranscripts = result.results || [];
+        
+        loading.classList.add('hidden');
+        
+        if (currentTranscripts.length === 0) {
+          emptyState.classList.remove('hidden');
+        } else {
+          displayTranscripts();
+          content.classList.remove('hidden');
+        }
+        
+        document.getElementById('transcript-count').textContent = `${currentTranscripts.length} transcripts`;
+      } catch (error) {
+        console.error('Failed to load transcripts:', error);
+        loading.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+      }
+    }
+
+    // Display transcripts
+    function displayTranscripts() {
+      const content = document.getElementById('transcript-content');
+      content.innerHTML = '';
+      
+      currentTranscripts.forEach((transcript, index) => {
+        const section = document.createElement('div');
+        section.style.marginBottom = '2rem';
+        section.style.paddingBottom = '2rem';
+        section.style.borderBottom = '1px solid var(--glass-border)';
+        
+        const timestamp = transcript.timestamp || new Date().toISOString();
+        
+        section.innerHTML = `
+          <div style="margin-bottom: 1rem;">
+            <h3 style="margin-bottom: 0.5rem;">Transcript #${index + 1}</h3>
+            <div class="text-muted" style="font-size: 0.875rem;">${formatTime(timestamp)}</div>
+          </div>
+          <div id="transcript-${index}"></div>
+        `;
+        
+        content.appendChild(section);
+        
+        // Add segments
+        const segments = transcript.payload?.segments || [];
+        const segmentsContainer = document.getElementById(`transcript-${index}`);
+        
+        segments.forEach(seg => {
+          const segEl = document.createElement('div');
+          segEl.style.marginBottom = '1rem';
+          segEl.style.padding = '1rem';
+          segEl.style.background = 'var(--glass)';
+          segEl.style.borderRadius = 'var(--radius-md)';
+          
+          const avatar = createSpeakerAvatar(seg.speaker || 'UNK');
+          
+          segEl.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
+              ${avatar.outerHTML}
+              <strong>${escapeHTML(seg.speaker || 'Unknown')}</strong>
+              <span class="text-muted" style="font-size: 0.75rem;">${formatDuration(seg.start)} - ${formatDuration(seg.end)}</span>
+            </div>
+            <div style="line-height: 1.6;">${escapeHTML(seg.text)}</div>
+          `;
+          
+          segmentsContainer.appendChild(segEl);
+        });
+      });
+    }
+
+    // Export transcript
+    function exportTranscript(format) {
+      if (currentTranscripts.length === 0) {
+        showToast('Error', 'No transcripts to export', 'error');
+        return;
+      }
+      
+      let content, filename, mimeType;
+      
+      if (format === 'json') {
+        content = JSON.stringify(currentTranscripts, null, 2);
+        filename = `transcripts_${Date.now()}.json`;
+        mimeType = 'application/json';
+      } else {
+        // Plain text format
+        content = currentTranscripts.map((t, i) => {
+          const segments = t.payload?.segments || [];
+          const lines = segments.map(s => `[${formatDuration(s.start)}] ${s.speaker}: ${s.text}`);
+          return `=== Transcript #${i + 1} ===\n${formatTime(t.timestamp)}\n\n${lines.join('\n')}`;
+        }).join('\n\n');
+        filename = `transcripts_${Date.now()}.txt`;
+        mimeType = 'text/plain';
+      }
+      
+      // Create download
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      showToast('Success', `Exported ${filename}`, 'success');
+    }
+
+    // Initialize page with authentication
+    async function initPage() {
+      // Enforce authentication
+      const authenticated = await Auth.init({ requireAuth: true });
+      if (!authenticated) return;
+      
+      // Initial load
+      loadTranscripts();
+    }
+    
+    // Call on DOM ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initPage);
+    } else {
+      initPage();
+    }
+  </script>
+
+</body>
+</html>
+

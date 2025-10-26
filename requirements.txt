@@ -1,0 +1,106 @@
+# ==========================================
+# CORE SERVER & WEB FRAMEWORK
+# ==========================================
+fastapi==0.110.3              # Modern async web framework
+uvicorn[standard]==0.30.6     # ASGI server with websocket support
+python-dotenv==1.0.1          # Environment variable management
+python-multipart==0.0.9       # Multipart form data parsing (file uploads)
+bcrypt==4.1.2                 # Password hashing for authentication
+pydantic==2.10.6              # Data validation and settings management (NeMo requires >=2.10.6)
+
+# ==========================================
+# DATA SCIENCE & NUMERICAL COMPUTING
+# ==========================================
+numpy==1.26.4                 # Numerical computing foundation
+pandas==2.2.3                 # Data manipulation and analysis
+scipy==1.13.1                 # Scientific computing algorithms
+scikit-learn==1.5.1           # Machine learning utilities (clustering, metrics)
+pyarrow==12.0.1               # Columnar data format
+
+# ==========================================
+# AUDIO PROCESSING & ENHANCEMENT
+# ==========================================
+soundfile==0.12.1             # Audio I/O (read/write WAV, FLAC, etc.)
+librosa==0.10.1               # Advanced audio analysis and processing
+noisereduce==3.0.2            # Spectral noise reduction
+webrtcvad==2.0.10             # Voice Activity Detection (VAD)
+pydub==0.25.1                 # Audio manipulation and format conversion
+audioread==3.0.1              # Audio decoding backend
+resampy==0.4.2                # High-quality audio resampling
+
+# ==========================================
+# DEEP LEARNING FRAMEWORKS
+# ==========================================
+torch==2.3.1                  # PyTorch deep learning framework
+torchaudio==2.3.1             # PyTorch audio processing
+torchvision==0.18.1           # PyTorch vision (dependency for some models)
+
+# ==========================================
+# NVIDIA NeMo TOOLKIT (ASR + SPEAKER)
+# ==========================================
+nemo-toolkit[asr]==2.5.1      # NVIDIA conversational AI toolkit
+megatron-core                 # Large-scale model training (NeMo dependency)
+hydra-core>=1.3.0             # Configuration management (NeMo dependency)
+omegaconf>=2.3.0              # Hierarchical configuration (NeMo dependency)
+
+# ==========================================
+# NLP & TRANSFORMERS
+# ==========================================
+transformers==4.53.0          # Hugging Face transformers (emotion, embeddings)
+sentence-transformers==3.0.0  # Sentence embeddings (RAG, semantic search)
+tokenizers>=0.15.0            # Fast tokenization
+huggingface_hub>=0.19.0       # Model hub client
+
+# ==========================================
+# LLM INFERENCE (GEMMA)
+# ==========================================
+llama-cpp-python==0.2.90      # Python bindings for llama.cpp (GGUF models)
+
+# ==========================================
+# VECTOR DATABASES & EMBEDDINGS
+# ==========================================
+faiss-cpu==1.8.0              # Facebook AI Similarity Search (CPU version)
+einops==0.8.1                 # Tensor operations for transformers
+
+# ==========================================
+# ASR DECODING & LANGUAGE MODELS
+# ==========================================
+pyctcdecode==0.5.0            # CTC beam search decoder with LM support
+pypi-kenlm==0.1.20220713      # KenLM language model (FIXED VERSION - was 0.2.0)
+
+# ==========================================
+# EVALUATION METRICS
+# ==========================================
+jiwer==3.1.0                  # Word Error Rate (WER) calculation (NeMo requires >=3.1.0)
+editdistance==0.6.2           # Levenshtein distance for text comparison
+
+# ==========================================
+# AUDIO QUALITY ASSESSMENT (OPTIONAL)
+# ==========================================
+# pystoi==0.3.3               # Short-Time Objective Intelligibility (STOI)
+# pesq==0.0.4                 # Perceptual Evaluation of Speech Quality
+
+# ==========================================
+# SPEECH PROCESSING UTILITIES
+# ==========================================
+# pynini==2.1.5               # Finite-state transducer library (text normalization)
+# kaldi-io==0.9.8             # Kaldi I/O utilities
+# kaldiio==2.18.0             # Alternative Kaldi I/O
+
+# ==========================================
+# DIARIZATION & SPEAKER RECOGNITION (OPTIONAL)
+# ==========================================
+# pyannote.audio==3.1.1       # Speaker diarization (if needed beyond NeMo)
+# resemblyzer==0.1.1.dev0     # Speaker embedding extraction
+
+# ==========================================
+# UTILITIES & HELPERS
+# ==========================================
+tqdm==4.66.1                  # Progress bars
+requests==2.32.5              # HTTP client
+
+# ==========================================
+# TESTING & DEVELOPMENT
+# ==========================================
+pytest==8.3.4                 # Testing framework
+pytest-asyncio==0.24.0        # Async test support for FastAPI

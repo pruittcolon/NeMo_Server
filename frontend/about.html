@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Server - About</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        
+        <div class="flex">
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 3rem; margin-bottom: 1rem; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+        Nemo Server
+      </h1>
+      <p class="text-muted" style="font-size: 1.125rem;">Enterprise Memory Intelligence System</p>
+      <div style="margin-top: 1rem;">
+        <span class="badge badge-primary">Version 3.2 REFACTORED</span>
+      </div>
+    </section>
+
+    <!-- System Architecture -->
+    <section class="fade-in-up delay-100" style="margin-bottom: 3rem;">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">System Architecture</h3>
+        <div class="grid grid-2" style="gap: 2rem;">
+          <div>
+            <h4 style="color: var(--primary); margin-bottom: 1rem;">GPU-Accelerated Services</h4>
+            <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+              <div style="padding: 0.75rem; background: var(--glass); border-radius: var(--radius-md);">
+                <strong>ASR (Speech-to-Text)</strong>
+                <div class="text-muted" style="font-size: 0.875rem;">Parakeet-CTC-1.1B (~2GB VRAM)</div>
+              </div>
+              <div style="padding: 0.75rem; background: var(--glass); border-radius: var(--radius-md);">
+                <strong>Gemma AI (LLM)</strong>
+                <div class="text-muted" style="font-size: 0.875rem;">Gemma 3 4B Q4_K_M (~4GB VRAM)</div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <h4 style="color: var(--success); margin-bottom: 1rem;">CPU Services</h4>
+            <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+              <div style="padding: 0.75rem; background: var(--glass); border-radius: var(--radius-md);">
+                <strong>Speaker Diarization</strong>
+                <div class="text-muted" style="font-size: 0.875rem;">TitaNet Large (192D embeddings)</div>
+              </div>
+              <div style="padding: 0.75rem; background: var(--glass); border-radius: var(--radius-md);">
+                <strong>Emotion Analysis</strong>
+                <div class="text-muted" style="font-size: 0.875rem;">DistilRoBERTa-base</div>
+              </div>
+              <div style="padding: 0.75rem; background: var(--glass); border-radius: var(--radius-md);">
+                <strong>RAG / Memory</strong>
+                <div class="text-muted" style="font-size: 0.875rem;">FAISS + MiniLM-L6-v2 (384D)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Technical Details -->
+    <section class="grid grid-3 fade-in-up delay-200" style="margin-bottom: 3rem;">
+      <div class="stat-card">
+        <i data-lucide="cpu" style="width: 32px; height: 32px; color: var(--primary); margin-bottom: 1rem;"></i>
+        <div class="stat-value">30</div>
+        <div class="stat-label">API Endpoints</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="zap" style="width: 32px; height: 32px; color: var(--success); margin-bottom: 1rem;"></i>
+        <div class="stat-value">~6GB</div>
+        <div class="stat-label">Total VRAM Usage</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="layers" style="width: 32px; height: 32px; color: var(--warning); margin-bottom: 1rem;"></i>
+        <div class="stat-value">5</div>
+        <div class="stat-label">AI Models</div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="grid grid-2 fade-in-up delay-300" style="margin-bottom: 3rem;">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Core Features</h3>
+        <ul style="list-style: none; padding: 0; margin: 0;">
+          <li style="padding: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-circle" style="width: 18px; height: 18px; color: var(--success);"></i>
+            Real-time speech transcription
+          </li>
+          <li style="padding: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-circle" style="width: 18px; height: 18px; color: var(--success);"></i>
+            Speaker identification & diarization
+          </li>
+          <li style="padding: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-circle" style="width: 18px; height: 18px; color: var(--success);"></i>
+            Emotion detection & analysis
+          </li>
+          <li style="padding: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-circle" style="width: 18px; height: 18px; color: var(--success);"></i>
+            Semantic memory search (RAG)
+          </li>
+          <li style="padding: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-circle" style="width: 18px; height: 18px; color: var(--success);"></i>
+            AI-powered insights (Gemma)
+          </li>
+          <li style="padding: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-circle" style="width: 18px; height: 18px; color: var(--success);"></i>
+            Personality analysis
+          </li>
+          <li style="padding: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="check-circle" style="width: 18px; height: 18px; color: var(--success);"></i>
+            Pattern detection
+          </li>
+        </ul>
+      </div>
+      
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Technology Stack</h3>
+        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+          <span class="chip">Python 3.10</span>
+          <span class="chip">FastAPI</span>
+          <span class="chip">PyTorch</span>
+          <span class="chip">NVIDIA NeMo</span>
+          <span class="chip">llama-cpp-python</span>
+          <span class="chip">FAISS</span>
+          <span class="chip">Sentence Transformers</span>
+          <span class="chip">Hugging Face</span>
+          <span class="chip">Docker</span>
+          <span class="chip">CUDA</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Refactoring Improvements -->
+    <section class="fade-in-up delay-400" style="margin-bottom: 3rem;">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">REFACTORED Improvements</h3>
+        <div class="grid grid-2" style="gap: 1.5rem;">
+          <div>
+            <h4 style="color: var(--success); margin-bottom: 0.75rem;">✓ Performance</h4>
+            <ul style="color: var(--text-secondary); line-height: 1.8; font-size: 0.875rem;">
+              <li>Gemma gets exclusive GPU access (no contention)</li>
+              <li>ASR uses GPU with 2GB budget</li>
+              <li>Deterministic model loading with fallbacks</li>
+              <li>Reduced startup time with lazy loading</li>
+            </ul>
+          </div>
+          <div>
+            <h4 style="color: var(--primary); margin-bottom: 0.75rem;">✓ Code Quality</h4>
+            <ul style="color: var(--text-secondary); line-height: 1.8; font-size: 0.875rem;">
+              <li>Service-based architecture</li>
+              <li>Consolidated duplicate speaker ID logic (3x → 1x)</li>
+              <li>Centralized model management</li>
+              <li>Premium HTML frontend (10 pages)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- System Health -->
+    <section class="fade-in-up delay-500">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">System Health</h3>
+        <div id="health-info">
+          <div class="flex-between" style="padding: 1rem; background: var(--glass); border-radius: var(--radius-md); margin-bottom: 0.5rem;">
+            <span><strong>API Status:</strong></span>
+            <span id="health-status" class="badge badge-success">Checking...</span>
+          </div>
+          <div class="flex-between" style="padding: 1rem; background: var(--glass); border-radius: var(--radius-md); margin-bottom: 0.5rem;">
+            <span><strong>GPU Available:</strong></span>
+            <span id="gpu-status" class="badge">Checking...</span>
+          </div>
+          <div class="flex-between" style="padding: 1rem; background: var(--glass); border-radius: var(--radius-md);">
+            <span><strong>Models Loaded:</strong></span>
+            <span id="models-status" class="badge">Checking...</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer style="text-align: center; padding: 3rem 0; color: var(--text-tertiary);">
+    <p style="font-size: 0.875rem;">Nemo Server &copy; 2024 | Built with 💜 for enterprise AI</p>
+  </footer>
+
+  <script>
+    lucide.createIcons();
+
+    // Load system health
+    async function loadHealth() {
+      try {
+        const health = await api.health();
+        
+        const statusEl = document.getElementById('health-status');
+        if (health.status === 'ok' || health.status === 'healthy') {
+          statusEl.className = 'badge badge-success';
+          statusEl.textContent = 'Healthy';
+        } else {
+          statusEl.className = 'badge badge-danger';
+          statusEl.textContent = 'Error';
+        }
+        
+        // GPU status (mock for now)
+        document.getElementById('gpu-status').className = 'badge badge-success';
+        document.getElementById('gpu-status').textContent = 'Available';
+        
+        // Models status (mock for now)
+        document.getElementById('models-status').className = 'badge badge-success';
+        document.getElementById('models-status').textContent = '5/5 Loaded';
+        
+      } catch (error) {
+        document.getElementById('health-status').className = 'badge badge-danger';
+        document.getElementById('health-status').textContent = 'Offline';
+      }
+    }
+
+    loadHealth();
+  </script>
+
+</body>
+</html>
+

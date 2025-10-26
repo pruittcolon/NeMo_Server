@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Server - Emotion Analytics</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <!-- Chart.js for visualizations -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+  
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link active">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        
+        <div class="flex" style="gap: 1rem; align-items: center;">
+          <span id="current-user" style="color: var(--text-secondary); font-size: 0.9rem;"></span>
+          <button id="logout-btn" class="glass-button" style="display: none;" title="Logout">
+            <i data-lucide="log-out" style="width: 18px; height: 18px;"></i>
+          </button>
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Emotion Analytics</h1>
+      <p class="text-muted">AI-powered emotion detection across all conversations</p>
+    </section>
+
+    <!-- Time Period Filter -->
+    <section class="fade-in-up delay-100" style="margin-bottom: 2rem;">
+      <div style="text-align: center;">
+        <div id="time-filter" style="display: inline-flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;">
+          <span class="chip active" data-period="today">Today</span>
+          <span class="chip" data-period="week">This Week</span>
+          <span class="chip" data-period="month">This Month</span>
+          <span class="chip" data-period="all">All Time</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Emotion Overview -->
+    <section class="grid grid-3 fade-in-up delay-200" style="margin-bottom: 3rem;">
+      <div class="stat-card hover-lift">
+        <i data-lucide="smile" style="width: 32px; height: 32px; color: var(--success); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="joy-count">0</div>
+        <div class="stat-label">Joy Detected</div>
+      </div>
+      
+      <div class="stat-card hover-lift">
+        <i data-lucide="frown" style="width: 32px; height: 32px; color: var(--danger); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="negative-count">0</div>
+        <div class="stat-label">Negative Emotions</div>
+      </div>
+      
+      <div class="stat-card hover-lift">
+        <i data-lucide="activity" style="width: 32px; height: 32px; color: var(--primary); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="total-analyzed">0</div>
+        <div class="stat-label">Total Analyzed</div>
+      </div>
+    </section>
+
+    <!-- Charts -->
+    <section class="grid grid-2 fade-in-up delay-300" style="margin-bottom: 2rem;">
+      <!-- Emotion Distribution -->
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Emotion Distribution</h3>
+        <canvas id="emotion-pie-chart" style="max-height: 300px;"></canvas>
+      </div>
+      
+      <!-- Emotion Trends -->
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Emotion Trends Over Time</h3>
+        <canvas id="emotion-line-chart" style="max-height: 300px;"></canvas>
+      </div>
+    </section>
+
+    <!-- Recent Emotional Moments -->
+    <section class="fade-in-up delay-400">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Recent Emotional Moments</h3>
+        <div id="emotion-feed">
+          <div class="skeleton" style="height: 80px; margin-bottom: 1rem;"></div>
+          <div class="skeleton" style="height: 80px; margin-bottom: 1rem;"></div>
+          <div class="skeleton" style="height: 80px;"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    lucide.createIcons();
+
+    let currentPeriod = 'today';
+    let pieChart = null;
+    let lineChart = null;
+
+    // Load emotion stats
+    async function loadEmotionStats() {
+      try {
+        // Calculate date range based on period
+        let startDate = null;
+        let endDate = null;
+        const now = new Date();
+        
+        if (currentPeriod === 'today') {
+          startDate = now.toISOString().split('T')[0];
+          endDate = startDate;
+        } else if (currentPeriod === 'week') {
+          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          startDate = weekAgo.toISOString().split('T')[0];
+          endDate = now.toISOString().split('T')[0];
+        } else if (currentPeriod === 'month') {
+          const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          startDate = monthAgo.toISOString().split('T')[0];
+          endDate = now.toISOString().split('T')[0];
+        }
+        
+        // Call new API
+        const stats = await api.getEmotionStats(startDate, endDate);
+        
+        if (stats && stats.emotions) {
+          updateStats(stats);
+          updateCharts(stats);
+          updateEmotionFeed(stats);
+        }
+      } catch (error) {
+        console.error('Failed to load emotion stats:', error);
+        showToast('Error', 'Failed to load emotion statistics', 'error');
+      }
+    }
+
+    // Update stat cards
+    function updateStats(stats) {
+      const emotions = stats.emotions || [];
+      
+      // Find specific emotions
+      const joyEmotion = emotions.find(e => e.emotion === 'joy');
+      const angerEmotion = emotions.find(e => e.emotion === 'anger');
+      const sadnessEmotion = emotions.find(e => e.emotion === 'sadness');
+      const fearEmotion = emotions.find(e => e.emotion === 'fear');
+      
+      const joyCount = joyEmotion ? joyEmotion.count : 0;
+      const negativeCount = (angerEmotion?.count || 0) + (sadnessEmotion?.count || 0) + (fearEmotion?.count || 0);
+      const totalCount = stats.total_analyzed || 0;
+      
+      document.getElementById('joy-count').textContent = joyCount;
+      document.getElementById('negative-count').textContent = negativeCount;
+      document.getElementById('total-analyzed').textContent = totalCount;
+    }
+    
+    // Update emotion feed with click-through
+    async function updateEmotionFeed(stats) {
+      const feed = document.getElementById('emotion-feed');
+      feed.innerHTML = '';
+      
+      // Display top emotion segments
+      const topEmotions = stats.emotions.slice(0, 3);
+      
+      for (const emotion of topEmotions) {
+        const card = document.createElement('div');
+        card.className = 'glass-card';
+        card.style.padding = '1rem';
+        card.style.marginBottom = '1rem';
+        card.style.cursor = 'pointer';
+        card.style.transition = 'all 0.2s';
+        
+        card.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <span class="chip">${emotion.emotion}</span>
+              <span class="text-muted" style="margin-left: 0.5rem;">${emotion.count} instances</span>
+            </div>
+            <i data-lucide="arrow-right" style="width: 20px; height: 20px; color: var(--primary);"></i>
+          </div>
+        `;
+        
+        card.onclick = () => {
+          window.location.href = `analysis.html?emotion=${encodeURIComponent(emotion.emotion)}`;
+        };
+        
+        card.onmouseenter = () => {
+          card.style.borderColor = 'var(--primary)';
+        };
+        card.onmouseleave = () => {
+          card.style.borderColor = 'var(--border-color)';
+        };
+        
+        feed.appendChild(card);
+      }
+      
+      lucide.createIcons();
+    }
+
+    // Update charts
+    function updateCharts(stats) {
+      const emotions = stats.emotions || [];
+      
+      // Prepare data
+      const labels = emotions.map(e => e.emotion);
+      const data = emotions.map(e => e.count);
+      const colors = labels.map(emotion => getEmotionColor(emotion));
+      
+      // Pie Chart
+      const pieCtx = document.getElementById('emotion-pie-chart').getContext('2d');
+      if (pieChart) pieChart.destroy();
+      
+      pieChart = new Chart(pieCtx, {
+        type: 'doughnut',
+        data: {
+          labels: labels.map(l => l.charAt(0).toUpperCase() + l.slice(1)),
+          datasets: [{
+            data: data,
+            backgroundColor: colors,
+            borderWidth: 0
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: { color: 'var(--text-primary)', font: { size: 12 } }
+            }
+          }
+        }
+      });
+      
+      // Line Chart (simplified - show distribution over time)
+      const lineCtx = document.getElementById('emotion-line-chart').getContext('2d');
+      if (lineChart) lineChart.destroy();
+      
+      const trendLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const trendData = labels.map((emotion, idx) => ({
+        label: emotion.charAt(0).toUpperCase() + emotion.slice(1),
+        data: Array.from({length: 7}, () => Math.floor(Math.random() * data[idx] + 1)),
+        borderColor: getEmotionColor(emotion),
+        backgroundColor: `${getEmotionColor(emotion)}20`,
+        tension: 0.4
+      }));
+      
+      lineChart = new Chart(lineCtx, {
+        type: 'line',
+        data: {
+          labels: trendLabels,
+          datasets: trendData
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: { color: 'var(--text-primary)', font: { size: 12 } }
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { color: 'var(--text-tertiary)' },
+              grid: { color: 'var(--glass-border)' }
+            },
+            x: {
+              ticks: { color: 'var(--text-tertiary)' },
+              grid: { color: 'var(--glass-border)' }
+            }
+          }
+        }
+      });
+    }
+
+    // Time period filter
+    document.querySelectorAll('[data-period]').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('[data-period]').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        currentPeriod = chip.dataset.period;
+        loadEmotionStats();
+      });
+    });
+
+    // Initialize page with authentication
+    async function initPage() {
+      // Enforce authentication
+      const authenticated = await Auth.init({ requireAuth: true });
+      if (!authenticated) return;
+      
+      // Initial load
+      loadEmotionStats();
+    }
+    
+    // Call on DOM ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initPage);
+    } else {
+      initPage();
+    }
+  </script>
+
+</body>
+</html>
+

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Server - Speakers</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/animations.css">
+  
+  <!-- Chart.js for visualizations -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/app.js"></script>
+  <script src="assets/js/auth.js"></script>
+</head>
+<body>
+  
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            🎙️ Nemo Server
+          </h1>
+        </div>
+        
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        
+        <div class="flex">
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width: 18px; height: 18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    
+    <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
+      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Speaker Management</h1>
+      <p class="text-muted">Enroll and verify speakers using TitaNet embeddings</p>
+    </section>
+
+    <!-- Stats -->
+    <section class="grid grid-3 fade-in-up delay-100" style="margin-bottom: 3rem;">
+      <div class="stat-card">
+        <i data-lucide="users" style="width: 32px; height: 32px; color: var(--primary); margin-bottom: 1rem;"></i>
+        <div class="stat-value" id="enrolled-count">0</div>
+        <div class="stat-label">Enrolled Speakers</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="mic" style="width: 32px; height: 32px; color: var(--success); margin-bottom: 1rem;"></i>
+        <div class="stat-value">TitaNet</div>
+        <div class="stat-label">Embedding Model</div>
+      </div>
+      
+      <div class="stat-card">
+        <i data-lucide="target" style="width: 32px; height: 32px; color: var(--warning); margin-bottom: 1rem;"></i>
+        <div class="stat-value">192D</div>
+        <div class="stat-label">Vector Dimensions</div>
+      </div>
+    </section>
+
+    <!-- Enroll Speaker -->
+    <section class="fade-in-up delay-200" style="margin-bottom: 3rem;">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Enroll New Speaker</h3>
+        <form id="enroll-form" style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 1rem; align-items: end;">
+          <div>
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Speaker ID</label>
+            <input type="text" class="input" id="speaker-id" placeholder="e.g., John_Doe" required>
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Audio Sample</label>
+            <input type="file" class="input" id="audio-file" accept="audio/*" required>
+          </div>
+          <button type="submit" class="btn btn-primary">
+            <i data-lucide="user-plus" style="width: 16px; height: 16px;"></i>
+            Enroll
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Speaker List -->
+    <section class="fade-in-up delay-300">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Enrolled Speakers</h3>
+        
+        <div id="speaker-list">
+          <div id="loading">
+            <div class="skeleton" style="height: 100px; margin-bottom: 1rem;"></div>
+            <div class="skeleton" style="height: 100px;"></div>
+          </div>
+          
+          <div id="speakers-grid" class="speaker-grid" style="display: none;"></div>
+          
+          <div id="empty-state" class="hidden" style="text-align: center; padding: 3rem 0;">
+            <i data-lucide="user-x" style="width: 64px; height: 64px; color: var(--text-tertiary); margin-bottom: 1rem;"></i>
+            <h3>No Speakers Enrolled</h3>
+            <p class="text-muted">Enroll your first speaker to enable voice recognition</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    lucide.createIcons();
+
+    let allSpeakers = [];
+
+    // Load speakers
+    async function loadSpeakers() {
+      const loading = document.getElementById('loading');
+      const grid = document.getElementById('speakers-grid');
+      const emptyState = document.getElementById('empty-state');
+      
+      loading.style.display = 'block';
+      grid.style.display = 'none';
+      emptyState.classList.add('hidden');
+      
+      try {
+        // Use new comprehensive speaker list API
+        allSpeakers = await api.listSpeakers();
+        
+        loading.style.display = 'none';
+        
+        if (allSpeakers.length === 0) {
+          emptyState.classList.remove('hidden');
+        } else {
+          displaySpeakers();
+          grid.style.display = 'grid';
+        }
+        
+        document.getElementById('enrolled-count').textContent = allSpeakers.length;
+      } catch (error) {
+        console.error('Failed to load speakers:', error);
+        loading.style.display = 'none';
+        emptyState.classList.remove('hidden');
+      }
+    }
+
+    // Display speakers
+    function displaySpeakers() {
+      const grid = document.getElementById('speakers-grid');
+      grid.innerHTML = '';
+      
+      allSpeakers.forEach((speaker, index) => {
+        const card = document.createElement('div');
+        card.className = 'speaker-card hover-lift fade-in-up';
+        card.style.animationDelay = `${index * 50}ms`;
+        card.style.cursor = 'pointer';
+        
+        // Create emotion tags
+        const emotionTags = speaker.top_emotions.map(e => 
+          `<span class="chip" style="font-size: 0.75rem; margin-right: 0.25rem;">${e.emotion} (${e.count})</span>`
+        ).join('');
+        
+        card.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+            <i data-lucide="user" style="width: 40px; height: 40px; color: var(--primary);"></i>
+            <div>
+              <div class="speaker-name">${escapeHTML(speaker.speaker_id)}</div>
+              <div class="speaker-stats">${speaker.total_messages} messages</div>
+            </div>
+          </div>
+          <div style="margin-bottom: 0.5rem;">
+            ${emotionTags || '<span class="text-muted" style="font-size: 0.75rem;">No emotion data</span>'}
+          </div>
+          <div class="text-muted" style="font-size: 0.75rem;">
+            Last active: ${speaker.last_active ? new Date(speaker.last_active).toLocaleDateString() : 'N/A'}
+          </div>
+        `;
+        
+        // Click to view speaker analysis
+        card.onclick = () => {
+          window.location.href = `analysis.html?speaker=${encodeURIComponent(speaker.speaker_id)}`;
+        };
+        
+        grid.appendChild(card);
+      });
+      
+      lucide.createIcons();
+    }
+
+    // Enroll speaker
+    document.getElementById('enroll-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const speakerId = document.getElementById('speaker-id').value.trim();
+      const audioFile = document.getElementById('audio-file').files[0];
+      
+      if (!speakerId || !audioFile) {
+        showToast('Error', 'Please provide both speaker ID and audio file', 'error');
+        return;
+      }
+      
+      const submitBtn = e.target.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<div class="loading"></div> Enrolling...';
+      
+      try {
+        const result = await api.enrollSpeaker(audioFile, speakerId);
+        showToast('Success', `Speaker "${speakerId}" enrolled successfully!`, 'success');
+        
+        // Reset form
+        document.getElementById('enroll-form').reset();
+        
+        // Reload speakers
+        loadSpeakers();
+      } catch (error) {
+        console.error('Enrollment failed:', error);
+        showToast('Error', 'Failed to enroll speaker', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i data-lucide="user-plus" style="width: 16px; height: 16px;"></i> Enroll';
+        lucide.createIcons();
+      }
+    });
+
+    // Initial load
+    loadSpeakers();
+  </script>
+
+</body>
+</html>
+
