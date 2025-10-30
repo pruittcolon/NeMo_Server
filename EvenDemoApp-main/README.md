@@ -85,3 +85,35 @@ flutter analyze
 
 Contributions are welcome—keep PRs focused, add Flutter tests where it makes sense, and make
 sure the backend API contract is respected.
+
+---
+
+## Features (Summary)
+
+- Authorization loop fix: attaches session cookie to WhisperServer for transcription/health.
+- Vocabulary game reliability: uses vibration feedback; guards against lifecycle races.
+- Chat Mode: wake with “Chat”, remembers context, auto‑exit after 10 minutes, say “Terminate” to exit.
+- Interview Mode: wake with “Interview”, optionally uses `assets/interview/` files if present.
+- Roku remote: renders a text UI on the glasses.
+- Quick Note: `Proto.sendQuickNoteBasic()` BLE trigger.
+
+## Quick Start (Supplement)
+
+```
+cd EvenDemoApp-main
+cp .env.example .env   # update values for your setup
+flutter pub get
+flutter run
+```
+
+## Optional Interview Data (Do Not Commit)
+
+Create locally if desired:
+- `assets/interview/resume.txt`
+- `assets/interview/projects.txt`
+
+These files are ignored by git and are not required for the app to run.
+
+## Changelog
+
+See `CHANGELOG.md` for recent updates.
