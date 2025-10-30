@@ -1,0 +1,36 @@
+# Flutter/Dart build artifacts
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+build/
+
+# Android (app-specific)
+android/app/.cxx/
+
+# Environment and secrets (keep example tracked)
+.env
+.env.*
+!.env.example
+
+# Optional local interview content (keep private)
+assets/interview/resume.txt
+assets/interview/projects.txt
+
+# Local reference docs
+Even Realities G1 BLE Protocol.docx
+
+# Local backups and temp files
+*.bak
+
+# IDE/editor files
+.idea/
+.vscode/
+*.iml
+
+# OS-specific cruft
+.DS_Store
+Thumbs.db
+
+# Note: Do NOT ignore pubspec.lock for apps.
