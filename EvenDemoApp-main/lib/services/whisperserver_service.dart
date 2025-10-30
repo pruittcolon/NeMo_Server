@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:demo_ai_even/services/auth_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Service to handle transcription using the local WhisperServer (main3.py)
 class WhisperServerService {
@@ -134,11 +136,29 @@ class WhisperServerService {
   /// Sends audio file to WhisperServer for transcription
   Future<void> _sendToWhisperServer(File audioFile) async {
     try {
+      // Get authentication token from storage
+      String? sessionToken;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        sessionToken = prefs.getString('session_token');
+      } catch (e) {
+        print("WhisperServerService: Could not load session token: $e");
+      }
+
       final formData = FormData.fromMap({
         'audio':
             await MultipartFile.fromFile(audioFile.path, filename: 'audio.wav'),
         'job_id': DateTime.now().millisecondsSinceEpoch.toString(),
       });
+
+      // Build headers with optional authentication
+      final headers = <String, dynamic>{};
+      if (sessionToken != null && sessionToken.isNotEmpty) {
+        headers['Cookie'] = 'ws_session=$sessionToken';
+        print("WhisperServerService: Using authenticated session");
+      } else {
+        print("WhisperServerService: No session token found, making unauthenticated request");
+      }
 
       final response = await _dio.post(
         '$_serverBaseUrl/transcribe',
@@ -147,6 +167,7 @@ class WhisperServerService {
           contentType: 'multipart/form-data',
           sendTimeout: const Duration(seconds: 120),
           receiveTimeout: const Duration(seconds: 240),
+          headers: headers.isNotEmpty ? headers : null,
         ),
       );
 
@@ -232,8 +253,26 @@ class WhisperServerService {
   /// Checks if WhisperServer is available
   Future<bool> isServerAvailable() async {
     try {
+      // Get authentication token from storage
+      String? sessionToken;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        sessionToken = prefs.getString('session_token');
+      } catch (e) {
+        print("WhisperServerService: Could not load session token for health check: $e");
+      }
+
+      // Build headers with optional authentication
+      final headers = <String, dynamic>{};
+      if (sessionToken != null && sessionToken.isNotEmpty) {
+        headers['Cookie'] = 'ws_session=$sessionToken';
+      }
+
       final response = await _dio.get('$_serverBaseUrl/health',
-          options: Options(sendTimeout: const Duration(seconds: 5)));
+          options: Options(
+            sendTimeout: const Duration(seconds: 5),
+            headers: headers.isNotEmpty ? headers : null,
+          ));
       return response.statusCode == 200;
     } catch (e) {
       print("WhisperServerService: Server not available: $e");
