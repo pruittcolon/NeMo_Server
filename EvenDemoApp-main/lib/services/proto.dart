@@ -220,4 +220,43 @@ class Proto {
     }
     return send;
   }
+
+  /// Send Quick Note (0x1E)
+  ///
+  /// Basic trigger for the glasses' Quicknote feature using a single-frame
+  /// payload observed in the vendor protocol logs. This sends to the left
+  /// lens only, mirroring the reference example.
+  ///
+  /// Notes:
+  /// - Exact payload schema is not fully specified in the doc; this uses a
+  ///   conservative packet seen working in logs. Adjust as needed once the
+  ///   final spec is confirmed.
+  /// - Returns true if no timeout occurred on the BLE request; otherwise false.
+  static Future<bool> sendQuickNoteBasic() async {
+    // Example frame from protocol logs (16 bytes total):
+    // 1e 10 00 29 03 01 00 01 00 03 00 01 00 01 00 00
+    final data = Uint8List.fromList([
+      0x1e,
+      0x10, 0x00,
+      0x29, 0x03,
+      0x01, 0x00,
+      0x01, 0x00,
+      0x03, 0x00,
+      0x01, 0x00,
+      0x01, 0x00,
+      0x00,
+    ]);
+
+    // Send to LEFT arm only (per reference). If a future spec requires both,
+    // mirror to "R" similar to other commands.
+    final resp = await BleManager.request(data, lr: "L", timeoutMs: 1500);
+
+    // Consider non-timeout as success for this lightweight trigger.
+    if (resp.isTimeout) {
+      print("${DateTime.now()} sendQuickNoteBasic timeout on L");
+      return false;
+    }
+    print("${DateTime.now()} sendQuickNoteBasic L ack: ${resp.data}");
+    return true;
+  }
 }

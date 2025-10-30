@@ -57,7 +57,7 @@ class FeaturesPage extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                    builder: (context) => const NotificationPage()),
+                    builder: (context) => const VocabularyGamePage()),
               );
             },
           ),

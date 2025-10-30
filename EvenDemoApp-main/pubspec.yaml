@@ -59,6 +59,7 @@ flutter:
     - assets/vocab.txt
     - assets/sounds/
     - assets/anim/
+    - assets/interview/
 
 flutter_icons:
   android: true

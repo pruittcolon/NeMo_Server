@@ -138,6 +138,11 @@ class EvenAI {
   bool _isAwaitingRokuCommand = false;
   bool _isAwaitingAlexaCommand = false; // --- NEW --- Flag for Alexa mode
 
+  // --- CHATGPT CONVERSATION MODE STATE ---
+  bool _isChatGPTConversationMode = false;
+  List<Map<String, String>> _chatGPTHistory = [];
+  Timer? _chatGPTModeTimer;
+
   // --- MEMORY MODE STATE ---
   /// Client used to communicate with the memory server.
   final _MemoryServerClient _memoryClient = _MemoryServerClient();
@@ -262,17 +267,23 @@ class EvenAI {
     }
   }
 
-  // Display the Roku remote BMP (no text overlay)
+  // Display Roku commands as text
   Future<void> _displayRokuRemoteCard() async {
     if (!BleManager.get().isConnected) {
-      print("EvenAI: Cannot display Roku remote; glasses not connected.");
+      print("EvenAI: Cannot display Roku commands; glasses not connected.");
       return;
     }
     try {
-      print("EvenAI: Displaying Roku remote card on glasses.");
-      await FeaturesServices().sendBmp("assets/images/image_2.bmp");
+      print("EvenAI: Displaying Roku commands on glasses.");
+      const rokuCommands = """Roku Remote:
+Power On/Off
+Up, Down, Left, Right
+Select, Home, Back
+Volume Up/Down
+Say 'Terminate' to exit""";
+      await TextService.get.startSendText(rokuCommands);
     } catch (e) {
-      print("EvenAI: Failed to display Roku remote card: $e");
+      print("EvenAI: Failed to display Roku commands: $e");
     }
   }
 
@@ -439,6 +450,10 @@ class EvenAI {
       RegExp(r"\balexa\b", caseSensitive: false).hasMatch(text);
   bool _matchesMenu(String text) =>
       RegExp(r"\bmenu\b", caseSensitive: false).hasMatch(text);
+  bool _matchesChatMode(String text) =>
+      RegExp(r"\bchat\b", caseSensitive: false).hasMatch(text);
+  bool _matchesInterviewMode(String text) =>
+      RegExp(r"\binterview\b", caseSensitive: false).hasMatch(text);
 
   Future<void> recordOverByOS() async {
     // --- MEMORY MODE ---
@@ -634,6 +649,81 @@ class EvenAI {
         }
       }
 
+      // --- ENTER CHATGPT CONVERSATION MODE ---
+      if (_matchesChatMode(cleanTranscript)) {
+        print("EvenAI: Entering ChatGPT Conversation Mode.");
+        _isChatGPTConversationMode = true;
+        _chatGPTHistory.clear();
+        await TextService.get.startSendText(
+            "Chat Mode:\nI'll remember our conversation.\nSay 'Terminate' to exit.");
+        _chatGPTModeTimer?.cancel();
+        _chatGPTModeTimer = Timer(const Duration(minutes: 10), () async {
+          print("EvenAI: ChatGPT mode FORCE EXIT after 10 minutes.");
+          _isChatGPTConversationMode = false;
+          _chatGPTHistory.clear();
+          await _robustExitBmp();
+          clear();
+          isRunning = false;
+        });
+        toStartEvenAIByOS();  // Immediately start listening for first question
+        return;
+      }
+
+      // --- ENTER INTERVIEW MODE ---
+      if (_matchesInterviewMode(cleanTranscript)) {
+        print("EvenAI: Entering Interview Mode.");
+        _isChatGPTConversationMode = true;  // Use same conversation mode
+        _chatGPTHistory.clear();
+        
+        // Load resume and context from assets
+        String resumeContext = "";
+        try {
+          final resumeText = await rootBundle.loadString('assets/interview/resume.txt');
+          final projectContext = await rootBundle.loadString('assets/interview/projects.txt');
+          resumeContext = "CANDIDATE BACKGROUND:\n$resumeText\n\nKEY PROJECTS:\n$projectContext";
+          print("EvenAI: Loaded resume and project context (${resumeContext.length} chars)");
+        } catch (e) {
+          print("EvenAI: Could not load resume/projects context: $e");
+          print("EvenAI: Using generic interview mode without custom context");
+        }
+        
+        // Set up Interview Mode system prompt with resume context
+        String systemPrompt = "You are an expert interview coach helping during a live job interview. "
+            "Keep ALL responses under 50 words - concise and direct. "
+            "Provide confident, professional answers that showcase skills and experience. "
+            "If asked a technical question, give the core concept first, then a brief example. "
+            "If asked behavioral questions, use STAR method (Situation, Task, Action, Result) briefly. "
+            "Sound natural and conversational, not robotic.";
+        
+        if (resumeContext.isNotEmpty) {
+          systemPrompt += "\n\n$resumeContext\n\n"
+              "Use the above background to provide accurate, personalized answers. "
+              "Draw from real projects and experience when answering. "
+              "Stay consistent with the resume details.";
+        } else {
+          systemPrompt += " If you don't have enough context, provide a strong general answer that works for most situations.";
+        }
+        
+        _chatGPTHistory.add({
+          "role": "system",
+          "content": systemPrompt
+        });
+        
+        await TextService.get.startSendText(
+            "Interview Mode:\nI'll help you answer interview questions.\nSay 'Terminate' to exit.");
+        _chatGPTModeTimer?.cancel();
+        _chatGPTModeTimer = Timer(const Duration(minutes: 10), () async {
+          print("EvenAI: Interview mode FORCE EXIT after 10 minutes.");
+          _isChatGPTConversationMode = false;
+          _chatGPTHistory.clear();
+          await _robustExitBmp();
+          clear();
+          isRunning = false;
+        });
+        toStartEvenAIByOS();  // Immediately start listening for first question
+        return;
+      }
+
       // --- NEW: ENTER ALEXA MODE ---
       if (_matchesAlexa(cleanTranscript)) {
         print("EvenAI: Entering Alexa Remote Mode.");
@@ -720,6 +810,15 @@ class EvenAI {
         if (cleanTranscript.contains("terminate") ||
             cleanTranscript.contains("end")) {
           print("EvenAI: User spoke 'terminate', ending session.");
+          
+          // Clear ChatGPT conversation mode if active
+          if (_isChatGPTConversationMode) {
+            print("EvenAI: Exiting ChatGPT/Interview mode. Clearing ${_chatGPTHistory.length} messages.");
+            _isChatGPTConversationMode = false;
+            _chatGPTHistory.clear();
+            _chatGPTModeTimer?.cancel();
+          }
+          
           _isAwaitingFollowUp = false;
           await _robustExitBmp();
           clear();
@@ -733,8 +832,22 @@ class EvenAI {
       updateDynamicText("Answering Question Asked: $transcript");
       await TextService.get.startSendText("Q: $transcript");
       final apiService = ApiDeepSeekService();
-      final answer = await apiService.sendChatRequest(transcript);
+      
+      // Pass conversation history if in ChatGPT conversation mode
+      final answer = await apiService.sendChatRequest(
+        transcript, 
+        conversationHistory: _isChatGPTConversationMode ? _chatGPTHistory : null
+      );
+      
       print("EvenAI: Answer from OpenAI: '$answer'");
+      
+      // If in conversation mode, add to history
+      if (_isChatGPTConversationMode) {
+        _chatGPTHistory.add({"role": "user", "content": transcript});
+        _chatGPTHistory.add({"role": "assistant", "content": answer});
+        print("ChatGPT: Conversation history now has ${_chatGPTHistory.length} messages");
+      }
+      
       updateDynamicText("$transcript\n\n$answer");
       isEvenAISyncing.value = false;
       saveQuestionItem(transcript, answer);
@@ -742,8 +855,15 @@ class EvenAI {
 
       _isAwaitingFollowUp = true;
       await Future.delayed(const Duration(seconds: 1));
-      await TextService.get
-          .startSendText("$answer\n\nSay 'Continue Asking ' or say 'Terminate' to End");
+      
+      // Show different prompt if in conversation mode
+      if (_isChatGPTConversationMode) {
+        await TextService.get
+            .startSendText("$answer\n\n'Continue' for more or 'Terminate' to exit");
+      } else {
+        await TextService.get
+            .startSendText("$answer\n\n'Continue Asking' or say 'Terminate' to End");
+      }
       _listenForFollowUpCommand();
     } catch (e) {
       print("EvenAI: Error during transcription or API call: $e");
@@ -1117,7 +1237,7 @@ class ApiDeepSeekService {
     );
   }
 
-  Future<String> sendChatRequest(String question) async {
+  Future<String> sendChatRequest(String question, {List<Map<String, String>>? conversationHistory}) async {
     String modelToUse;
     if (question.toLowerCase().contains("research")) {
       modelToUse = "gpt-5";
@@ -1126,15 +1246,26 @@ class ApiDeepSeekService {
     }
     print("Keyword check complete. Using model: $modelToUse");
 
+    // Build messages array with conversation history
+    List<Map<String, String>> messages = [
+      {"role": "system", "content": "You are a helpful assistant. Keep responses concise for smart glasses display."},
+    ];
+    
+    // Add conversation history if provided
+    if (conversationHistory != null && conversationHistory.isNotEmpty) {
+      messages.addAll(conversationHistory);
+      print("ChatGPT: Including ${conversationHistory.length} previous messages");
+    }
+    
+    // Add current question
+    messages.add({"role": "user", "content": question});
+
     final data = {
       "model": modelToUse,
-      "messages": [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": question}
-      ],
+      "messages": messages,
     };
 
-    print("Sending request to OpenAI with data: $data");
+    print("Sending request to OpenAI with ${messages.length} messages");
 
     try {
       final response = await _dio.post('/chat/completions', data: data);

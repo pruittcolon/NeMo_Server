@@ -3,6 +3,7 @@ import 'package:demo_ai_even/controllers/evenai_model_controller.dart';
 import 'package:demo_ai_even/views/home_page.dart';
 import 'package:demo_ai_even/views/login_page.dart';
 import 'package:demo_ai_even/services/auth_service.dart';
+import 'package:demo_ai_even/utils/vocabulary_initializer.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -23,6 +24,9 @@ Future<void> main() async {
   Get.put(EvenaiModelController());
   AuthService.instance.initialize();
   
+  // Initialize vocabulary database
+  await VocabularyInitializer.initialize();
+  
   runApp(MyApp());
 }
 
@@ -35,7 +39,7 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         brightness: Brightness.dark,
       ),
-      // Start with LoginPage instead of HomePage
+      // Start with LoginPage - user must authenticate first
       home: LoginPage(), 
     );
   }
