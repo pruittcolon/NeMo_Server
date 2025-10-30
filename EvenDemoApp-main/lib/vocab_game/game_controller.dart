@@ -65,14 +65,17 @@ class VocabularyGameController extends ChangeNotifier {
   bool get hasQuestions => _quizWords.isNotEmpty;
 
   Future<void> initialize({required bool reviewMode}) async {
+    print("🎮 [VOCAB GAME] Initializing game controller (reviewMode: $reviewMode)");
     _reviewMode = reviewMode;
     await preferences.ensureLoaded();
+    print("🎮 [VOCAB GAME] Preferences loaded - questions per round: ${preferences.questionsPerRound}");
     audio.setEnabled(preferences.soundEnabled);
     _highScore = preferences.highScore;
     await startRound(reviewMode: reviewMode);
   }
 
   Future<void> startRound({required bool reviewMode}) async {
+    print("🎮 [VOCAB GAME] Starting round (reviewMode: $reviewMode)");
     _reviewMode = reviewMode;
     _setLoading(true);
     _score = 0;
@@ -81,18 +84,22 @@ class VocabularyGameController extends ChangeNotifier {
     _selectedAnswer = null;
     _isAnswered = false;
 
+    print("🎮 [VOCAB GAME] Loading words from repository...");
     final words = await repository.loadRoundWords(
       count: preferences.questionsPerRound,
       reviewMode: reviewMode,
     );
     _quizWords = words;
+    print("🎮 [VOCAB GAME] Loaded ${_quizWords.length} words for quiz");
     if (_quizWords.isEmpty) {
+      print("❌ [VOCAB GAME] ERROR: No words loaded!");
       _currentQuestion = null;
       _setLoading(false);
       notifyListeners();
       return;
     }
     await _prepareQuestion();
+    print("✅ [VOCAB GAME] Round started successfully, first question ready");
     _setLoading(false);
     notifyListeners();
   }
@@ -107,10 +114,12 @@ class VocabularyGameController extends ChangeNotifier {
       return;
     }
     final word = _quizWords[_currentQuestionIndex];
+    print("🎮 [VOCAB GAME] Preparing question ${_currentQuestionIndex + 1}/${_quizWords.length} for word: ${word.word}");
     final distractors = await repository.randomDistractors(
       3,
       excludeId: word.id,
     );
+    print("🎮 [VOCAB GAME] Got ${distractors.length} distractors");
     _currentQuestion = GameQuestion.fromWord(
       word: word,
       distractors: distractors,
@@ -118,6 +127,7 @@ class VocabularyGameController extends ChangeNotifier {
     );
     _isAnswered = false;
     _selectedAnswer = null;
+    print("✅ [VOCAB GAME] Question prepared successfully");
   }
 
   Future<void> selectAnswer(String answer) async {

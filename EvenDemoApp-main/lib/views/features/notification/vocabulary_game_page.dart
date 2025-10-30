@@ -55,13 +55,16 @@ class _VocabularyGamePageState extends State<VocabularyGamePage>
   @override
   void initState() {
     super.initState();
+    print("🎮 [VOCAB PAGE] Initializing VocabularyGamePage (reviewMode: ${widget.reviewMode})");
     _idleAnimExists = _assetExists('assets/anim/idle_animation.json');
     _controller = VocabularyGameController(
       repository: widget.repository,
       preferences: widget.preferences,
       audio: widget.audio,
     )..addListener(_onControllerChanged);
+    print("🎮 [VOCAB PAGE] Controller created, calling initialize...");
     _controller.initialize(reviewMode: widget.reviewMode);
+    print("🎮 [VOCAB PAGE] Initialize called");
   }
 
   void _onControllerChanged() {
@@ -79,15 +82,19 @@ class _VocabularyGamePageState extends State<VocabularyGamePage>
 
   void _handleAnswer(String option) async {
     if (_controller.isAnswered || _controller.isLoading) return;
+    if (!mounted) return;
     await _controller.selectAnswer(option);
+    if (!mounted) return;
     _showCorrectAnimation = _controller.lastAnswerCorrect;
     if (_controller.lastAnswerCorrect) {
       HapticFeedback.lightImpact();
     } else {
       HapticFeedback.mediumImpact();
     }
-    setState(() {});
-    _scheduleAdvance();
+    if (mounted) {
+      setState(() {});
+      _scheduleAdvance();
+    }
   }
 
   void _scheduleAdvance() {

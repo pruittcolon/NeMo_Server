@@ -13,15 +13,12 @@ class SoundManager {
     if (!_soundEnabled) return;
 
     try {
-      // Try to play a simple online sound
-      await _player.setUrl('https://www.soundjay.com/misc/sounds/bell-ringing-05.wav');
-      _player.play();
-    } catch (e) {
-      print('Error playing correct sound: $e');
-      // Fallback to vibration
+      // Use vibration feedback for correct answer
       if (await Vibration.hasVibrator() ?? false) {
         Vibration.vibrate(duration: 100);
       }
+    } catch (e) {
+      print('Error playing correct sound: $e');
     }
   }
 
@@ -29,15 +26,12 @@ class SoundManager {
     if (!_soundEnabled) return;
 
     try {
-      // Try to play a different online sound
-      await _player.setUrl('https://www.soundjay.com/misc/sounds/bell-ringing-04.wav');
-      _player.play();
-    } catch (e) {
-      print('Error playing incorrect sound: $e');
-      // Fallback to vibration
+      // Use vibration feedback for incorrect answer
       if (await Vibration.hasVibrator() ?? false) {
         Vibration.vibrate(duration: 300, pattern: [0, 100, 50, 100, 50, 100]);
       }
+    } catch (e) {
+      print('Error playing incorrect sound: $e');
     }
   }
 }
