@@ -1,0 +1,35 @@
+# Emotion Service (CPU-only)
+FROM python:3.12-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd -m -u 1000 nemo && mkdir -p /app && chown -R nemo:nemo /app
+
+WORKDIR /app
+
+# Copy requirements
+COPY services/emotion-service/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy service code
+COPY services/emotion-service/src/ ./src/
+
+# Copy shared modules from parent
+COPY shared /app/shared
+COPY shared/emotion_analyzer.py /app/
+COPY shared/config.py /app/
+
+USER nemo
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8005/health || exit 1
+
+EXPOSE 8005
+
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8005"]

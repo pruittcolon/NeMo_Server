@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:demo_ai_even/services/app_logger.dart';
 
 /// Authentication Service for WhisperServer backend
@@ -16,12 +16,19 @@ class AuthService {
   String _serverBase = '';
   String? _sessionToken;
   Map<String, dynamic>? _currentUser;
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+  static const String _sessionTokenKey = 'session_token';
+  static const String _userDataKey = 'user_data';
+  static const String _csrfTokenKey = 'csrf_token';
+  AndroidOptions _androidOptions() => const AndroidOptions(encryptedSharedPreferences: true);
+  IOSOptions _iosOptions() => const IOSOptions(accessibility: KeychainAccessibility.first_unlock);
   
   final StreamController<bool> _authStateController = StreamController<bool>.broadcast();
   Stream<bool> get authStateStream => _authStateController.stream;
   
   bool get isAuthenticated => _sessionToken != null && _currentUser != null;
   Map<String, dynamic>? get currentUser => _currentUser;
+  String? get sessionToken => _sessionToken;
 
   void initialize() {
     _serverBase = dotenv.env['WHISPER_SERVER_BASE']?.trim() ?? 'http://127.0.0.1:8000';
@@ -58,8 +65,28 @@ class AuthService {
           _sessionToken = data['session_token'];
           _currentUser = data['user'];
           
-          // Persist session token
-          await _saveSession();
+          // Extract CSRF token from Set-Cookie header
+          String? csrfToken;
+          try {
+            final cookies = response.headers['set-cookie'];
+            if (cookies != null) {
+              for (final cookie in cookies) {
+                if (cookie.startsWith('csrf_token=')) {
+                  final parts = cookie.split(';')[0].split('=');
+                  if (parts.length == 2) {
+                    csrfToken = parts[1];
+                    AppLogger.instance.log('AuthService', 'CSRF token extracted from cookie');
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            AppLogger.instance.log('AuthService', 'Failed to extract CSRF token: $e', isError: true);
+          }
+          
+          // Persist session token and CSRF token
+          await _saveSession(csrfToken: csrfToken);
           
           _authStateController.add(true);
           
@@ -180,25 +207,56 @@ class AuthService {
   }
 
   /// Save session to persistent storage
-  Future<void> _saveSession() async {
+  Future<void> _saveSession({String? csrfToken}) async {
     if (_sessionToken != null && _currentUser != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('session_token', _sessionToken!);
-      await prefs.setString('user_data', jsonEncode(_currentUser!));
-      AppLogger.instance.log('AuthService', 'Session saved to storage');
+      await _secureStorage.write(
+        key: _sessionTokenKey,
+        value: _sessionToken!,
+        aOptions: _androidOptions(),
+        iOptions: _iosOptions(),
+      );
+      await _secureStorage.write(
+        key: _userDataKey,
+        value: jsonEncode(_currentUser!),
+        aOptions: _androidOptions(),
+        iOptions: _iosOptions(),
+      );
+      if (csrfToken != null && csrfToken.isNotEmpty) {
+        await _secureStorage.write(
+          key: _csrfTokenKey,
+          value: csrfToken,
+          aOptions: _androidOptions(),
+          iOptions: _iosOptions(),
+        );
+        AppLogger.instance.log('AuthService', 'Session and CSRF token stored securely');
+      } else {
+        await _secureStorage.delete(
+          key: _csrfTokenKey,
+          aOptions: _androidOptions(),
+          iOptions: _iosOptions(),
+        );
+        AppLogger.instance.log('AuthService', 'Session stored securely (no CSRF token)');
+      }
     }
   }
 
   /// Load session from persistent storage
   Future<void> _loadSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    _sessionToken = prefs.getString('session_token');
-    final userData = prefs.getString('user_data');
-    
+    _sessionToken = await _secureStorage.read(
+      key: _sessionTokenKey,
+      aOptions: _androidOptions(),
+      iOptions: _iosOptions(),
+    );
+    final userData = await _secureStorage.read(
+      key: _userDataKey,
+      aOptions: _androidOptions(),
+      iOptions: _iosOptions(),
+    );
+
     if (userData != null) {
       try {
         _currentUser = jsonDecode(userData);
-        AppLogger.instance.log('AuthService', 'Session loaded from storage');
+        AppLogger.instance.log('AuthService', 'Session loaded from secure storage');
       } catch (e) {
         AppLogger.instance.log('AuthService', 'Failed to parse user data: $e', isError: true);
         await _clearSession();
@@ -208,10 +266,22 @@ class AuthService {
 
   /// Clear session from persistent storage
   Future<void> _clearSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('session_token');
-    await prefs.remove('user_data');
-    AppLogger.instance.log('AuthService', 'Session cleared from storage');
+    await _secureStorage.delete(
+      key: _sessionTokenKey,
+      aOptions: _androidOptions(),
+      iOptions: _iosOptions(),
+    );
+    await _secureStorage.delete(
+      key: _userDataKey,
+      aOptions: _androidOptions(),
+      iOptions: _iosOptions(),
+    );
+    await _secureStorage.delete(
+      key: _csrfTokenKey,
+      aOptions: _androidOptions(),
+      iOptions: _iosOptions(),
+    );
+    AppLogger.instance.log('AuthService', 'Session cleared from secure storage');
   }
 
   void dispose() {
@@ -230,5 +300,3 @@ class LoginResult {
     this.user,
   });
 }
-
-

@@ -1,3 +1,0 @@
-# Emotion Analysis Service
-
-

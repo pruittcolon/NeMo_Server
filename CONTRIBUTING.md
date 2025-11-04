@@ -1,264 +1,307 @@
 # Contributing to Nemo Server
 
-Thank you for your interest in contributing to Nemo Server! This document provides guidelines and instructions for contributing.
+First off, thank you for considering contributing to Nemo Server! 🎉
+
+Following these guidelines helps communicate that you respect the time of the developers managing and developing this open source project. In return, they should reciprocate that respect in addressing your issue, assessing changes, and helping you finalize your pull requests.
 
 ---
 
-## 🎯 Ways to Contribute
+## 🌟 How Can I Contribute?
 
-- **Bug Reports**: Found a bug? Let us know!
-- **Feature Requests**: Have an idea? We'd love to hear it!
-- **Code Contributions**: Want to fix or improve something? Pull requests welcome!
-- **Documentation**: Help improve our docs
-- **Testing**: Test new features and report issues
-- **Translation**: Help translate the UI (future feature)
+### Reporting Bugs
 
----
+Before creating bug reports, please check the issue list as you might find that you don't need to create one. When you are creating a bug report, please include as many details as possible using our [bug report template](.github/ISSUE_TEMPLATE/bug_report.md).
 
-## 🐛 Reporting Bugs
+**How to submit a good bug report:**
 
-Before creating a bug report:
-1. Check existing issues to avoid duplicates
-2. Update to the latest version
-3. Test with a clean install if possible
-
-When reporting bugs, include:
-- **Clear title** describing the issue
-- **Steps to reproduce** the bug
-- **Expected behavior** vs **actual behavior**
-- **Environment**:
-  - OS and version
+- Use a clear and descriptive title
+- Describe the exact steps to reproduce the problem
+- Provide specific examples to demonstrate the steps
+- Describe the behavior you observed and what you expected
+- Include logs, screenshots, or error messages
+- Specify your environment:
+  - OS (Ubuntu, Debian, etc.)
   - Python version
   - Docker version
   - GPU model and CUDA version
-  - Browser (for frontend issues)
-- **Logs**: Include relevant error messages
-- **Screenshots**: If applicable
+  - Docker Compose logs
 
----
+### Suggesting Enhancements
 
-## 💡 Feature Requests
+Enhancement suggestions are tracked as GitHub issues. When creating an enhancement suggestion, please include:
 
-We welcome feature requests! Please include:
-- **Clear description** of the feature
-- **Use case**: Why is this feature needed?
-- **Proposed implementation**: If you have ideas
-- **Alternatives considered**: Other solutions you've thought about
+- A clear and descriptive title
+- A detailed description of the proposed functionality
+- Explain why this enhancement would be useful
+- List any alternative solutions you've considered
+
+### Pull Requests
+
+1. **Fork the repository** and create your branch from `main`
+2. **Make your changes** following our code standards
+3. **Test your changes** thoroughly
+4. **Update documentation** if needed
+5. **Submit a pull request** using our template
 
 ---
 
 ## 🔧 Development Setup
 
 ### Prerequisites
-- Python 3.10+
-- Docker & Docker Compose
-- NVIDIA GPU with CUDA support (for GPU features)
+
+- Docker 24.0+
+- Docker Compose
+- NVIDIA GPU with CUDA 12.6+ (recommended)
 - Git
+- Python 3.12+ (for local development)
 
-### Setup Instructions
+### Getting Started
 
-```bash
-# 1. Fork and clone the repository
-git clone https://github.com/YOUR_USERNAME/Nemo_Server.git
-cd Nemo_Server
+1. **Clone your fork:**
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/NeMo_Server.git
+   cd NeMo_Server
+   ```
 
-# 2. Create environment file
-cp .env.example .env
-# Edit .env with your settings
+2. **Create a branch:**
+   ```bash
+   git checkout -b feature/my-new-feature
+   # or
+   git checkout -b fix/bug-description
+   ```
 
-# 3. Build and run with Docker
-cd docker
-docker compose build
-docker compose up -d
+3. **Set up development environment:**
+   ```bash
+   # Generate secrets
+   cd docker/secrets
+   bash generate_secrets.sh
+   cd ../..
+   
+   # Start services
+   ./start.sh
+   ```
 
-# 4. Verify installation
-docker logs nemo_server
-curl http://localhost:8000/health
-```
+4. **Make your changes**
 
-### Development Without Docker
-
-```bash
-# 1. Create virtual environment
-python3.10 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# 2. Install dependencies
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-
-# 3. Download models (see README.md)
-
-# 4. Run server
-cd src
-python main.py
-```
+5. **Run tests:**
+   ```bash
+   # Run all tests (unit + smoke + security by default)
+   ./scripts/run_tests.sh
+   
+   # Run specific tests
+   pytest -m unit -v
+   RUN_INTEGRATION=1 pytest -m integration -v
+   pytest -m smoke -v
+   ```
 
 ---
 
-## 📝 Pull Request Process
+## 📝 Code Standards
 
-### Before Submitting
+### Python Code Style
 
-1. **Create an issue** first to discuss major changes
-2. **Fork the repository** and create a branch
-3. **Follow code style** (PEP 8 for Python)
-4. **Write tests** for new features
-5. **Update documentation** if needed
-6. **Test your changes** thoroughly
+- Follow [PEP 8](https://pep8.org/)
+- Use type hints where appropriate
+- Maximum line length: 120 characters
+- Use meaningful variable and function names
+- Add docstrings for all functions and classes
 
-### Branch Naming
+**Example:**
+```python
+def transcribe_audio(audio_file: bytes, enable_diarization: bool = True) -> TranscriptionResult:
+    """
+    Transcribe audio file with optional speaker diarization.
+    
+    Args:
+        audio_file: Raw audio bytes
+        enable_diarization: Whether to perform speaker diarization
+        
+    Returns:
+        TranscriptionResult with text and segments
+        
+    Raises:
+        AudioProcessingError: If audio format is invalid
+    """
+    pass
+```
 
-- `feature/description` - New features
-- `fix/description` - Bug fixes
-- `docs/description` - Documentation updates
-- `refactor/description` - Code refactoring
+### Docker Best Practices
+
+- Use multi-stage builds where appropriate
+- Minimize layer count
+- Don't include secrets in images
+- Use specific version tags, not `latest`
+- Document environment variables
 
 ### Commit Messages
 
-Use clear, descriptive commit messages:
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-Good:
-✅ Add speaker enrollment API endpoint
-✅ Fix authentication bypass vulnerability
-✅ Update README with installation steps
+<type>(<scope>): <subject>
 
-Bad:
-❌ Update code
-❌ Fix bug
-❌ Changes
+<body>
+
+<footer>
 ```
 
-### Pull Request Template
+**Types:**
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation changes
+- `style`: Code style changes (formatting)
+- `refactor`: Code refactoring
+- `perf`: Performance improvements
+- `test`: Adding or updating tests
+- `chore`: Maintenance tasks
+- `ci`: CI/CD changes
 
-```markdown
-## Description
-Brief description of changes
+**Examples:**
+```
+feat(transcription): add support for multiple languages
 
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
+Implement language detection and multi-language transcription
+using NeMo's multilingual models.
 
-## Testing
-- [ ] Tests pass locally
-- [ ] New tests added
-- [ ] Manual testing performed
+Closes #123
+```
 
-## Checklist
-- [ ] Code follows style guidelines
-- [ ] Documentation updated
-- [ ] No new warnings
-- [ ] Ready for review
+```
+fix(api-gateway): resolve session timeout issue
+
+Sessions were expiring too quickly due to incorrect TTL calculation.
+Updated the session manager to use proper timestamp conversion.
+
+Fixes #456
 ```
 
 ---
 
-## 🧪 Testing
-
-### Run All Tests
-
-```bash
-# Security tests
-./tests/test_security_comprehensive.sh
-
-# Python tests
-pytest tests/
-
-# Smoke test
-./tests/smoke_test.sh
-```
+## 🧪 Testing Guidelines
 
 ### Writing Tests
 
-- Place tests in `tests/` directory
-- Follow existing test patterns
-- Test both success and failure cases
-- Mock external dependencies
+- Write tests for all new features
+- Update tests when modifying existing features
+- Aim for >80% code coverage
+- Use descriptive test names
 
-Example:
+**Test Structure:**
 ```python
-def test_speaker_isolation():
-    """Test that users can only see their speaker's data"""
-    # Test implementation
-    pass
-```
-
----
-
-## 📚 Documentation Guidelines
-
-- Use clear, concise language
-- Include code examples
-- Add screenshots for UI features
-- Keep README.md up to date
-- Document API changes
-
----
-
-## 🎨 Code Style
-
-### Python
-- Follow **PEP 8**
-- Use **type hints** where possible
-- Document functions with docstrings
-- Keep functions focused and small
-
-Example:
-```python
-def process_audio(
-    audio_path: str,
-    sample_rate: int = 16000
-) -> Dict[str, Any]:
-    """
-    Process audio file for transcription.
+def test_transcription_with_diarization():
+    """Test that transcription correctly identifies multiple speakers."""
+    # Arrange
+    audio_file = load_test_audio("multi_speaker.wav")
     
-    Args:
-        audio_path: Path to audio file
-        sample_rate: Target sample rate in Hz
-        
-    Returns:
-        Dictionary with processed audio data
-    """
-    pass
+    # Act
+    result = transcribe(audio_file, enable_diarization=True)
+    
+    # Assert
+    assert len(result.segments) > 0
+    assert "SPEAKER_01" in [s.speaker for s in result.segments]
 ```
 
-### JavaScript/HTML/CSS
-- Use **consistent indentation** (2 spaces)
-- Use **meaningful variable names**
-- Add comments for complex logic
-- Follow existing code patterns
+### Running Tests
+
+```bash
+# All tests
+pytest
+
+# With coverage
+pytest --cov=services --cov-report=html
+
+# Specific service
+pytest tests/unit/test_transcription.py
+
+# Integration tests (requires running services)
+pytest tests/integration/ --docker
+
+# Security tests
+./scripts/verify_security.py
+```
+
+---
+
+## 📚 Documentation
+
+### When to Update Documentation
+
+- Adding new features
+- Changing API endpoints
+- Modifying configuration options
+- Changing deployment procedures
+- Adding new environment variables
+
+### Documentation Locations
+
+- **README.md**: Overview, quick start, main features
+- **services/*/README.md**: Service-specific documentation
+- **API changes**: Update service README with examples
+- **Configuration**: Document in main README and service README
 
 ---
 
 ## 🔍 Code Review Process
 
-All submissions require review. We aim to:
-- Provide feedback within 3-5 days
-- Be constructive and respectful
-- Explain reasoning for changes
-- Help you improve your contribution
+1. **Automated checks must pass:**
+   - CI/CD pipeline
+   - Code style checks
+   - Security scans
+   - Test coverage
 
-### What We Look For
-- ✅ Code quality and readability
-- ✅ Test coverage
-- ✅ Documentation
-- ✅ Performance impact
-- ✅ Security implications
-- ✅ Backward compatibility
+2. **Maintainer review:**
+   - Code quality
+   - Design patterns
+   - Performance implications
+   - Security considerations
+
+3. **Changes requested:**
+   - Address all feedback
+   - Push additional commits
+   - Request re-review
+
+4. **Approval and merge:**
+   - Squash and merge (usually)
+   - Descriptive merge commit message
 
 ---
 
-## 🚫 What We Don't Accept
+## 🏷️ Branch Naming
 
-- Code that breaks existing functionality
-- Contributions without tests
-- Plagiarized code
-- Code with security vulnerabilities
-- Changes that significantly degrade performance
-- Contributions that don't follow our code style
+- `feature/` - New features
+- `fix/` - Bug fixes
+- `docs/` - Documentation updates
+- `refactor/` - Code refactoring
+- `test/` - Test additions/updates
+- `chore/` - Maintenance tasks
+
+Examples:
+- `feature/multi-language-support`
+- `fix/session-timeout-bug`
+- `docs/update-api-examples`
+
+---
+
+## 🐛 Issue Labels
+
+- `bug` - Something isn't working
+- `enhancement` - New feature or request
+- `documentation` - Documentation improvements
+- `good first issue` - Good for newcomers
+- `help wanted` - Extra attention needed
+- `priority: high` - High priority
+- `priority: medium` - Medium priority
+- `priority: low` - Low priority
+- `wontfix` - Won't be worked on
+- `duplicate` - Duplicate issue
+
+---
+
+## 💡 Questions?
+
+- Open a [discussion](https://github.com/pruittcolon/NeMo_Server/discussions)
+- Ask in an issue
+- Check existing documentation
 
 ---
 
@@ -268,31 +311,8 @@ By contributing, you agree that your contributions will be licensed under the MI
 
 ---
 
-## 💬 Communication
+## 🙏 Thank You!
 
-- **GitHub Issues**: For bugs and features
-- **Pull Requests**: For code contributions
-- **Discussions**: For questions and ideas (if enabled)
+Your contributions make Nemo Server better for everyone! 
 
----
-
-## 🙏 Recognition
-
-Contributors will be:
-- Listed in release notes
-- Added to CONTRIBUTORS.md (if significant contribution)
-- Mentioned in relevant documentation
-
----
-
-## ❓ Questions?
-
-Not sure about something? Feel free to:
-- Open an issue with your question
-- Check existing issues for answers
-- Review documentation in `docs/` directory
-
----
-
-Thank you for contributing to Nemo Server! 🎉
-
+**Hall of Fame:** Check out our [Contributors](https://github.com/pruittcolon/NeMo_Server/graphs/contributors)! ⭐

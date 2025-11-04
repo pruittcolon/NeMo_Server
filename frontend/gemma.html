@@ -15,9 +15,12 @@
   <link rel="stylesheet" href="assets/css/components.css">
   <link rel="stylesheet" href="assets/css/animations.css">
   
-  <script src="assets/js/api.js"></script>
-  <script src="assets/js/app.js"></script>
-  <script src="assets/js/auth.js"></script>
+  <script>
+    window.__ASSET_VERSION__ = window.__ASSET_VERSION__ || '2024110101';
+  </script>
+  <script src="assets/js/api.js?v=2024110101"></script>
+  <script src="assets/js/app.js?v=2024110101"></script>
+  <script src="assets/js/auth.js?v=2024110101"></script>
   
   <style>
     .chat-container {
@@ -144,6 +147,35 @@
     <section class="fade-in-up delay-200">
       <div class="glass-card" style="padding: 0;">
         <div class="chat-container">
+          <div class="chat-controls" style="padding: 1rem; border-bottom: 1px solid var(--glass-border); display: flex; flex-wrap: wrap; gap: 1rem;">
+            <div style="flex: 1 1 200px;">
+              <label style="display: block; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.25rem; color: var(--text-tertiary);">
+                Transcript Range
+              </label>
+              <select id="context-range" class="input" style="padding: 0.5rem 0.75rem;">
+                <option value="25">Last 25 transcriptions</option>
+                <option value="50" selected>Last 50 transcriptions</option>
+                <option value="100">Last 100 transcriptions</option>
+                <option value="0">All time</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 200px;">
+              <label style="display: block; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.25rem; color: var(--text-tertiary);">
+                Emotion Focus
+              </label>
+              <select id="emotion-bias" class="input" style="padding: 0.5rem 0.75rem;">
+                <option value="none" selected>All conversations</option>
+                <option value="conflict">Conflicts & arguments</option>
+                <option value="joy">Positive highlights</option>
+              </select>
+            </div>
+            <div style="display: flex; align-items: flex-end;">
+              <label style="display: flex; align-items: center; gap: 0.5rem;">
+                <input type="checkbox" id="include-memories">
+                Include memory notes
+              </label>
+            </div>
+          </div>
           <div class="chat-messages" id="chat-messages">
             <!-- Welcome message -->
             <div class="chat-message ai">
@@ -224,30 +256,89 @@
     const chatForm = document.getElementById('chat-form');
     const chatInput = document.getElementById('chat-input');
     const sendBtn = document.getElementById('send-btn');
+    const rangeSelect = document.getElementById('context-range');
+    const emotionBiasSelect = document.getElementById('emotion-bias');
+    const includeMemoriesToggle = document.getElementById('include-memories');
 
-    // Send message
+    function buildRagPayload(message) {
+      const payload = {
+        query: message,
+        max_tokens: 400,
+        temperature: 0.7,
+        top_p: 0.9,
+        top_k_results: 8,
+      };
+
+      const lastN = parseInt(rangeSelect.value, 10);
+      if (Number.isFinite(lastN) && lastN > 0) {
+        payload.last_n_transcripts = lastN;
+      }
+
+      const bias = emotionBiasSelect.value;
+      if (bias === 'conflict') {
+        payload.bias_emotions = ['anger', 'sadness', 'fear'];
+      } else if (bias === 'joy') {
+        payload.bias_emotions = ['joy', 'surprise'];
+      }
+
+      if (includeMemoriesToggle.checked) {
+        payload.use_memories = true;
+        payload.include_memories_top_k = 3;
+      }
+
+      return payload;
+    }
+
+    function viewTranscript(jobId, startSeconds) {
+      if (!jobId) return;
+      const timestamp = typeof startSeconds === 'number' && !Number.isNaN(startSeconds)
+        ? `&t=${Math.max(0, Math.floor(startSeconds))}`
+        : '';
+      window.location.href = `transcripts.html?job=${encodeURIComponent(jobId)}${timestamp}`;
+    }
+    window.viewTranscript = viewTranscript;
+
     chatForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const message = chatInput.value.trim();
       if (!message) return;
-      
-      // Add user message
+
       addMessage('user', message);
       chatInput.value = '';
-      
-      // Show loading
+
       sendBtn.disabled = true;
-      sendBtn.innerHTML = '<div class="loading"></div>';
-      
+      sendBtn.innerHTML = '<div class="loading"></div> Warming up GPU...';
+
       try {
-        // Get AI response
-        const response = await api.gemmaChat(message);
-        
-        // Add AI response
-        addMessage('ai', response.response || 'No response available');
+        console.debug('🔥 [GEMMA] Warming up Gemma on GPU...', { message });
+        const warmup = await api.gemmaWarmup();
+        if (!warmup || warmup.status === 'error') {
+          throw new Error(warmup?.message || 'Warmup failed');
+        }
+        console.debug('✅ [GEMMA] Warmup complete', warmup);
+        if (warmup.warning) {
+          addMessage('ai', `⚠️ ${escapeHTML(warmup.warning)} — continuing in CPU mode.`);
+        } else if (warmup.model_on_gpu) {
+          addMessage('ai', '🚀 GPU is ready. Generating a response...');
+        }
+
+        sendBtn.innerHTML = '<div class="loading"></div> Generating...';
+
+        const payload = buildRagPayload(message);
+        console.debug('💬 [GEMMA] Sending RAG chat payload', payload);
+        const response = await api.gemmaChatRag(payload);
+        console.debug('💬 [GEMMA] RAG chat response', response);
+
+        const aiText = response.answer || response.message || 'No response available';
+        addMessage('ai', aiText, {
+          mode: response.mode,
+          tokens: response.tokens_generated,
+          confidence: response.confidence,
+          sources: response.sources || [],
+        });
       } catch (error) {
         console.error('Chat error:', error);
-        addMessage('ai', 'Sorry, I encountered an error. Please try again.');
+        addMessage('ai', 'Sorry, I encountered an error while generating that answer. Please try again.');
       } finally {
         sendBtn.disabled = false;
         sendBtn.innerHTML = '<i data-lucide="send" style="width: 18px; height: 18px;"></i> Send';
@@ -255,20 +346,49 @@
       }
     });
 
-    // Add message to chat
-    function addMessage(sender, text) {
+    function addMessage(sender, text, options = {}) {
       const messageEl = document.createElement('div');
       messageEl.className = `chat-message ${sender}`;
-      
+
       if (sender === 'ai') {
+        const modeLabel = options.mode ? options.mode.toUpperCase() : '';
+        const confidenceLabel = typeof options.confidence === 'number'
+          ? `${Math.round(options.confidence * 100)}% confidence`
+          : '';
+
+        const metaLine = [modeLabel, confidenceLabel].filter(Boolean).join(' • ');
+
         messageEl.innerHTML = `
           <div class="chat-avatar ai">
             <i data-lucide="sparkles" style="width: 20px; height: 20px; color: white;"></i>
           </div>
           <div class="chat-bubble ai">
             ${escapeHTML(text)}
+            ${metaLine ? `<div class="text-muted" style="font-size: 0.75rem; margin-top: 0.5rem;">${escapeHTML(metaLine)}</div>` : ''}
           </div>
         `;
+
+        if (options.sources && options.sources.length) {
+          const sourcesContainer = document.createElement('div');
+          sourcesContainer.style.marginTop = '0.75rem';
+          sourcesContainer.style.fontSize = '0.75rem';
+          sourcesContainer.innerHTML = '<strong>Sources:</strong>';
+
+          options.sources.forEach((source) => {
+            const sourceLine = document.createElement('div');
+            const label = source.label || 'Source';
+            const speaker = source.speaker ? ` • ${source.speaker}` : '';
+            const timestamp = source.timestamp ? ` • ${source.timestamp}` : '';
+            const snippet = source.text_preview ? ` — ${escapeHTML(source.text_preview)}` : '';
+            const viewBtn = source.job_id
+              ? `<button class="btn btn-ghost btn-xs" onclick="viewTranscript('${source.job_id}', ${source.start_time ?? 'null'})">View</button>`
+              : '';
+            sourceLine.innerHTML = `[${escapeHTML(label)}${speaker}${timestamp}]${snippet} ${viewBtn}`;
+            sourcesContainer.appendChild(sourceLine);
+          });
+
+          messageEl.querySelector('.chat-bubble.ai').appendChild(sourcesContainer);
+        }
       } else {
         messageEl.innerHTML = `
           <div class="chat-bubble user">
@@ -279,32 +399,37 @@
           </div>
         `;
       }
-      
+
       chatMessages.appendChild(messageEl);
       lucide.createIcons();
-      
-      // Scroll to bottom
       chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
-    // Quick analysis
     async function quickAnalysis(type) {
-      const messages = {
-        summary: 'Generate a summary of recent conversations',
-        personality: 'Analyze the personality traits of the speakers',
-        patterns: 'Find communication patterns in recent transcripts'
+      const prompts = {
+        summary: 'Summarize the most important points from recent conversations.',
+        personality: 'Analyze the personality traits shown in recent discussions.',
+        patterns: 'What communication patterns have emerged lately?',
       };
-      
-      chatInput.value = messages[type];
+      chatInput.value = prompts[type];
       chatForm.dispatchEvent(new Event('submit'));
     }
 
-    // Load GPU stats
+    window.quickAnalysis = quickAnalysis;
     async function loadGPUStats() {
       try {
         const stats = await api.getGemmaStats();
-        if (stats && stats.gpu_memory_used) {
-          document.getElementById('gpu-memory').textContent = `~${Math.round(stats.gpu_memory_used / 1024)}GB`;
+        console.debug('[GEMMA] Stats', stats);
+        if (!stats) return;
+
+        if (stats.model_on_gpu !== undefined) {
+          document.getElementById('inference-speed').textContent = stats.model_on_gpu ? '~30 tok/s' : '~10 tok/s (CPU)';
+        }
+
+        if (stats.vram_used_mb !== undefined && stats.vram_total_mb) {
+          const used = Math.round(stats.vram_used_mb / 1024 * 10) / 10;
+          const total = Math.round(stats.vram_total_mb / 1024 * 10) / 10;
+          document.getElementById('gpu-memory').textContent = `${used} / ${total} GB`;
         }
       } catch (error) {
         console.error('Failed to load GPU stats:', error);
@@ -331,4 +456,3 @@
 
 </body>
 </html>
-

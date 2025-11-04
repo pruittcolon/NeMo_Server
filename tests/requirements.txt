@@ -1,0 +1,25 @@
+# Test Requirements for REFACTORED
+
+# Testing framework
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# HTTP client for API tests
+httpx==0.27.0
+
+# System monitoring
+psutil==5.9.6
+
+# For security tests (may not be available if pysqlcipher3 not installed)
+# pysqlcipher3==1.2.0  # Uncomment if available
+
+# Code quality
+black==23.12.1
+flake8==6.1.0
+mypy==1.7.1
+
+
+
+
+

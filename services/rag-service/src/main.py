@@ -1,0 +1,1270 @@
+"""
+RAG Service - FAISS Vector Search with Full Metadata Storage
+
+Provides semantic search across transcripts with speaker, emotion, and audio metrics.
+Enables natural language queries like "what did they say about wireless signal?"
+"""
+
+import os
+import json
+import sqlite3
+import uuid
+import threading
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from pathlib import Path
+import logging
+
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel
+import sys
+from shared.crypto.db_encryption import create_encrypted_db
+
+# Add shared modules to path
+sys.path.insert(0, '/app')
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+JWT_ONLY = os.getenv("JWT_ONLY", "false").lower() in {"1", "true", "yes"}
+DB_PATH = Path(os.getenv("DB_PATH", "/app/instance/rag.db"))
+FAISS_INDEX_PATH = Path(os.getenv("FAISS_INDEX_PATH", "/app/faiss_index/index.bin"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 dimension
+
+# Global state
+rag_service = None
+service_auth = None
+
+
+# ============================================================================
+# DATA MODELS
+# ============================================================================
+
+class TranscriptSegment(BaseModel):
+    """Single segment of a transcript"""
+    text: str
+    speaker: str
+    start_time: float
+    end_time: float
+    emotion: Optional[str] = None
+    emotion_confidence: Optional[float] = None
+    emotion_scores: Optional[Dict[str, float]] = None
+    audio_metrics: Optional[Dict[str, float]] = None  # pitch, energy, speaking_rate, etc.
+
+
+class TranscriptIndexRequest(BaseModel):
+    """Request to index a full transcript"""
+    job_id: str
+    session_id: str
+    full_text: str
+    audio_duration: float
+    segments: List[TranscriptSegment]
+
+
+class SemanticSearchRequest(BaseModel):
+    """Request for semantic search"""
+    query: str
+    top_k: int = 5
+    doc_type: Optional[str] = None  # 'transcript_segment' or 'memory'
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    last_n_transcripts: Optional[int] = None
+    speakers: Optional[List[str]] = None
+    bias_emotions: Optional[List[str]] = None
+
+
+class MemoryAddRequest(BaseModel):
+    """Request to add a memory/note"""
+    title: str
+    body: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+# ============================================================================
+# RAG SERVICE CLASS
+# ============================================================================
+
+class RAGService:
+    """
+    Vector-based RAG service with FAISS indexing
+    
+    Features:
+    - Semantic search with sentence-transformers
+    - FAISS vector index for fast similarity search
+    - Full metadata storage (speaker, emotion, audio metrics)
+    - Persistent storage (SQLite + FAISS)
+    """
+    
+    def __init__(
+        self,
+        db_path: Path,
+        faiss_index_path: Path,
+        embedding_model_name: str = EMBEDDING_MODEL,
+        db_encryption_key: Optional[str] = None,
+    ):
+        self.db_path = db_path
+        self.faiss_index_path = faiss_index_path
+        self.embedding_model_name = embedding_model_name
+        self.embedding_dim = EMBEDDING_DIM
+
+        # Thread safety
+        self.lock = threading.RLock()
+
+        # FAISS index and document store
+        self.faiss_index = None
+        self.document_store: Dict[str, Dict[str, Any]] = {}
+
+        # Database (SQLCipher if key provided)
+        self._db = create_encrypted_db(
+            db_path=str(self.db_path),
+            encryption_key=db_encryption_key,
+            use_encryption=db_encryption_key is not None,
+            connect_kwargs={"check_same_thread": False},
+        )
+        if self._db.use_encryption:
+            logger.info("RAG database encryption ENABLED")
+        else:
+            logger.warning("RAG database encryption DISABLED")
+
+        # Initialize components
+        self._init_directories()
+        self._init_embedding_model()
+        self._init_database()
+        self._init_faiss_index()
+        self._load_existing_data()
+        
+        logger.info("RAG Service initialized successfully")
+    
+    def _init_directories(self):
+        """Ensure required directories exist"""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.faiss_index_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Directories initialized: {self.db_path.parent}, {self.faiss_index_path.parent}")
+    
+    def _init_embedding_model(self):
+        """Initialize SentenceTransformer for embeddings"""
+        try:
+            logger.info(f"Loading embedding model: {self.embedding_model_name}")
+            
+            # Set cache folder to use models directory
+            import os
+            cache_folder = os.getenv("HF_HOME", "/app/models")
+            os.environ["SENTENCE_TRANSFORMERS_HOME"] = cache_folder
+            
+            # Load model (will use cache if available, download if not)
+            self.embedding_model = SentenceTransformer(self.embedding_model_name, device='cpu', cache_folder=cache_folder)
+            
+            logger.info(f"Embedding model loaded successfully (CPU) from cache: {cache_folder}")
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            raise
+    
+    def _init_database(self):
+        """Initialize SQLite database schema"""
+        with self.lock:
+            conn = self._db.connect()
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            
+            # Transcript records (full transcript metadata)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS transcript_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT UNIQUE,
+                    session_id TEXT,
+                    full_text TEXT,
+                    audio_duration REAL,
+                    timestamp TEXT,
+                    created_at TEXT
+                )
+            """)
+            
+            # Transcript segments (individual segments with ALL metadata)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS transcript_segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_id INTEGER,
+                    seq INTEGER,
+                    text TEXT,
+                    speaker TEXT,
+                    start_time REAL,
+                    end_time REAL,
+                    speaker_confidence REAL,
+                    emotion TEXT,
+                    emotion_confidence REAL,
+                    emotion_scores TEXT,
+                    audio_metrics TEXT,
+                    embedding BLOB,
+                    doc_id TEXT UNIQUE,
+                    created_at TEXT,
+                    FOREIGN KEY (transcript_id) REFERENCES transcript_records(id)
+                )
+            """)
+            
+            # Memories table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id TEXT UNIQUE,
+                    title TEXT,
+                    body TEXT,
+                    metadata TEXT,
+                    embedding BLOB,
+                    doc_id TEXT UNIQUE,
+                    created_at TEXT
+                )
+            """)
+            
+            # Indexes for performance
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_transcript ON transcript_segments(transcript_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_speaker ON transcript_segments(speaker)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_timestamp ON transcript_segments(start_time)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_doc_id ON transcript_segments(doc_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_memories_doc_id ON memories(doc_id)")
+            
+            conn.commit()
+            conn.close()
+            try:
+                self.db_path.chmod(0o600)
+            except Exception:
+                pass
+            
+            logger.info("Database schema initialized")
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = self._db.connect()
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def _init_faiss_index(self):
+        """Initialize or load FAISS index"""
+        try:
+            if self.faiss_index_path.exists():
+                logger.info(f"Loading existing FAISS index from {self.faiss_index_path}")
+                self.faiss_index = faiss.read_index(str(self.faiss_index_path))
+                
+                # Load document store
+                doc_store_path = Path(str(self.faiss_index_path) + ".docs")
+                if doc_store_path.exists():
+                    with open(doc_store_path, 'r', encoding='utf-8') as f:
+                        self.document_store = json.load(f)
+                
+                logger.info(f"FAISS index loaded with {self.faiss_index.ntotal} documents")
+            else:
+                logger.info("Creating new FAISS index (IndexFlatIP for cosine similarity)")
+                self.faiss_index = faiss.IndexFlatIP(self.embedding_dim)
+                logger.info("New FAISS index created")
+        except Exception as e:
+            logger.error(f"Failed to initialize FAISS index: {e}")
+            self.faiss_index = faiss.IndexFlatIP(self.embedding_dim)
+    
+    def _load_existing_data(self):
+        """Load existing segments/memories from database into FAISS"""
+        try:
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                
+                # Load transcript segments
+                cur.execute("SELECT * FROM transcript_segments WHERE doc_id IS NOT NULL")
+                segments = cur.fetchall()
+                
+                embeddings_to_add = []
+                for seg in segments:
+                    doc_id = seg['doc_id']
+                    if doc_id not in self.document_store:
+                        # Reconstruct document metadata
+                        self.document_store[doc_id] = {
+                            'id': doc_id,
+                            'text': seg['text'],
+                            'type': 'transcript_segment',
+                            'segment_id': seg['id'],
+                            'transcript_id': seg['transcript_id'],
+                            'speaker': seg['speaker'],
+                            'start_time': seg['start_time'],
+                            'end_time': seg['end_time'],
+                            'emotion': seg['emotion'],
+                            'emotion_confidence': seg['emotion_confidence'],
+                            'emotion_scores': json.loads(seg['emotion_scores']) if seg['emotion_scores'] else None,
+                            'audio_metrics': json.loads(seg['audio_metrics']) if seg['audio_metrics'] else None,
+                            'created_at': seg['created_at']
+                        }
+                        
+                        # Decode embedding
+                        if seg['embedding']:
+                            embedding = np.frombuffer(seg['embedding'], dtype=np.float32)
+                            embeddings_to_add.append(embedding)
+                
+                # Load memories
+                cur.execute("SELECT * FROM memories WHERE doc_id IS NOT NULL")
+                memories = cur.fetchall()
+                
+                for mem in memories:
+                    doc_id = mem['doc_id']
+                    if doc_id not in self.document_store:
+                        self.document_store[doc_id] = {
+                            'id': doc_id,
+                            'text': f"{mem['title']}\n{mem['body']}",
+                            'type': 'memory',
+                            'memory_id': mem['memory_id'],
+                            'title': mem['title'],
+                            'body': mem['body'],
+                            'metadata': json.loads(mem['metadata']) if mem['metadata'] else {},
+                            'created_at': mem['created_at']
+                        }
+                        
+                        if mem['embedding']:
+                            embedding = np.frombuffer(mem['embedding'], dtype=np.float32)
+                            embeddings_to_add.append(embedding)
+                
+                conn.close()
+                
+                # Add embeddings to FAISS
+                if embeddings_to_add:
+                    embeddings_array = np.vstack(embeddings_to_add)
+                    self.faiss_index.add(embeddings_array)
+                    logger.info(f"Loaded {len(embeddings_to_add)} documents into FAISS index")
+                else:
+                    logger.info("No existing documents to load")
+                    
+        except Exception as e:
+            logger.error(f"Failed to load existing data: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def get_embedding(self, text: str) -> np.ndarray:
+        """Generate embedding for text"""
+        try:
+            embedding = self.embedding_model.encode(text, convert_to_tensor=False)
+            # Normalize for cosine similarity (required for IndexFlatIP)
+            embedding = embedding.astype(np.float32)
+            embedding = embedding / np.linalg.norm(embedding)
+            return embedding
+        except Exception as e:
+            logger.error(f"Failed to generate embedding: {e}")
+            return np.zeros(self.embedding_dim, dtype=np.float32)
+    
+    def index_transcript(
+        self,
+        job_id: str,
+        session_id: str,
+        full_text: str,
+        audio_duration: float,
+        segments: List[Dict[str, Any]]
+    ) -> int:
+        """
+        Index a full transcript with all segments and metadata
+        
+        Returns transcript_id
+        """
+        with self.lock:
+            try:
+                conn = self._connect()
+                cur = conn.cursor()
+                
+                timestamp = datetime.utcnow().isoformat()
+                
+                # Store transcript record
+                cur.execute("""
+                    INSERT OR REPLACE INTO transcript_records
+                    (job_id, session_id, full_text, audio_duration, timestamp, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (job_id, session_id, full_text, audio_duration, timestamp, timestamp))
+                
+                transcript_id = cur.lastrowid
+                if transcript_id == 0:
+                    # If REPLACE happened, get existing ID
+                    cur.execute("SELECT id FROM transcript_records WHERE job_id = ?", (job_id,))
+                    transcript_id = cur.fetchone()[0]
+                
+                # Clear old segments if replacing
+                cur.execute("SELECT doc_id FROM transcript_segments WHERE transcript_id = ?", (transcript_id,))
+                old_doc_ids = [row[0] for row in cur.fetchall()]
+                for doc_id in old_doc_ids:
+                    if doc_id in self.document_store:
+                        del self.document_store[doc_id]
+                
+                cur.execute("DELETE FROM transcript_segments WHERE transcript_id = ?", (transcript_id,))
+                
+                # Store segments and index in FAISS
+                embeddings_to_add = []
+                for idx, seg in enumerate(segments):
+                    doc_id = f"seg_{job_id}_{idx}_{uuid.uuid4().hex[:8]}"
+                    text = seg.get('text', '')
+                    
+                    # Generate embedding
+                    embedding = self.get_embedding(text)
+                    embeddings_to_add.append(embedding)
+                    
+                    # Store in document store
+                    self.document_store[doc_id] = {
+                        'id': doc_id,
+                        'text': text,
+                        'type': 'transcript_segment',
+                        'job_id': job_id,
+                        'transcript_id': transcript_id,
+                        'seq': idx,
+                        'speaker': seg.get('speaker'),
+                        'start_time': seg.get('start_time'),
+                        'end_time': seg.get('end_time'),
+                        'emotion': seg.get('emotion'),
+                        'emotion_confidence': seg.get('emotion_confidence'),
+                        'emotion_scores': seg.get('emotion_scores'),
+                        'audio_metrics': seg.get('audio_metrics'),
+                        'created_at': timestamp
+                    }
+                    
+                    # Store in database
+                    cur.execute("""
+                        INSERT INTO transcript_segments
+                        (transcript_id, seq, text, speaker, start_time, end_time,
+                         speaker_confidence, emotion, emotion_confidence, emotion_scores,
+                         audio_metrics, embedding, doc_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        transcript_id,
+                        idx,
+                        text,
+                        seg.get('speaker'),
+                        seg.get('start_time'),
+                        seg.get('end_time'),
+                        seg.get('speaker_confidence'),
+                        seg.get('emotion'),
+                        seg.get('emotion_confidence'),
+                        json.dumps(seg.get('emotion_scores')) if seg.get('emotion_scores') else None,
+                        json.dumps(seg.get('audio_metrics')) if seg.get('audio_metrics') else None,
+                        embedding.tobytes(),
+                        doc_id,
+                        timestamp
+                    ))
+                
+                # Add all embeddings to FAISS
+                if embeddings_to_add:
+                    embeddings_array = np.vstack(embeddings_to_add)
+                    self.faiss_index.add(embeddings_array)
+                    logger.info(f"Indexed {len(embeddings_to_add)} segments for job {job_id}")
+                
+                conn.commit()
+                conn.close()
+                
+                # Save FAISS index
+                self._save_faiss_index()
+                
+                logger.info(f"Transcript {job_id} indexed successfully (transcript_id={transcript_id})")
+                return transcript_id
+                
+            except Exception as e:
+                logger.error(f"Failed to index transcript: {e}")
+                import traceback
+                traceback.print_exc()
+                conn.rollback()
+                conn.close()
+                raise
+    
+    def search_semantic(
+        self,
+        query: str,
+        top_k: int = 5,
+        doc_type: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        last_n_transcripts: Optional[int] = None,
+        speakers: Optional[List[str]] = None,
+        bias_emotions: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Semantic search using FAISS vector similarity
+        
+        Args:
+            query: Natural language query
+            top_k: Number of results to return
+            doc_type: Filter by 'transcript_segment' or 'memory' (optional)
+        
+        Returns:
+            List of results with text, metadata, and similarity score
+        """
+        try:
+            # Generate query embedding
+            query_embedding = self.get_embedding(query)
+            
+            # Search FAISS index (get more candidates for filtering)
+            candidate_limit = max(20, top_k * 3)
+            D, I = self.faiss_index.search(query_embedding.reshape(1, -1), candidate_limit)
+            
+            # Hydrate results from document store
+            filtered_results = []
+            doc_ids = list(self.document_store.keys())
+            start_dt = None
+            end_dt = None
+            speakers_set = {s.lower() for s in speakers} if speakers else None
+            bias_set = {e.lower() for e in bias_emotions} if bias_emotions else None
+            allowed_transcript_ids = None
+
+            if start_date:
+                try:
+                    start_dt = datetime.fromisoformat(start_date)
+                except ValueError:
+                    try:
+                        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    except ValueError:
+                        logger.warning(f"[RAG] Invalid start_date format: {start_date}")
+                        start_dt = None
+            if end_date:
+                try:
+                    end_dt = datetime.fromisoformat(end_date)
+                except ValueError:
+                    try:
+                        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                    except ValueError:
+                        logger.warning(f"[RAG] Invalid end_date format: {end_date}")
+                        end_dt = None
+
+            if last_n_transcripts and last_n_transcripts > 0:
+                allowed_transcript_ids = self._get_recent_transcript_ids(last_n_transcripts)
+                logger.info(f"[RAG] Limiting search to last {len(allowed_transcript_ids)} transcripts")
+
+            def parse_created_at(value: Optional[str]) -> Optional[datetime]:
+                if not value:
+                    return None
+                try:
+                    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    try:
+                        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        try:
+                            return datetime.strptime(value, "%Y-%m-%d")
+                        except ValueError:
+                            return None
+            
+            for score, idx in zip(D[0], I[0]):
+                if idx < 0 or idx >= len(doc_ids):
+                    continue
+                
+                doc_id = doc_ids[idx]
+                doc = self.document_store.get(doc_id)
+                
+                if not doc:
+                    continue
+                
+                # Filter by doc_type if specified
+                if doc_type and doc.get('type') != doc_type:
+                    continue
+
+                metadata = {k: v for k, v in doc.items() if k not in ['id', 'text', 'type']}
+                created_at_raw = metadata.get('created_at')
+                created_at_dt = parse_created_at(created_at_raw)
+
+                # Date filtering
+                if start_dt and created_at_dt and created_at_dt < start_dt:
+                    continue
+                if end_dt and created_at_dt and created_at_dt > end_dt:
+                    continue
+
+                # last_n transcripts filter (transcript segments only)
+                if allowed_transcript_ids is not None and doc.get('type') == 'transcript_segment':
+                    transcript_id = metadata.get('transcript_id')
+                    if transcript_id not in allowed_transcript_ids:
+                        continue
+
+                # speaker filter (transcript segments only)
+                if speakers_set and doc.get('type') == 'transcript_segment':
+                    speaker_value = (metadata.get('speaker') or '').lower()
+                    if speaker_value not in speakers_set:
+                        continue
+
+                adjusted_score = float(score)
+                if bias_set and doc.get('type') == 'transcript_segment':
+                    emotion_value = (metadata.get('emotion') or '').lower()
+                    if emotion_value in bias_set:
+                        adjusted_score += 0.05
+
+                filtered_results.append({
+                    'id': doc['id'],
+                    'text': doc['text'],
+                    'type': doc['type'],
+                    'metadata': metadata,
+                    'score': adjusted_score
+                })
+            
+            filtered_results.sort(key=lambda r: r['score'], reverse=True)
+            final_results = filtered_results[:top_k]
+            logger.info(f"Semantic search for '{query}' returned {len(final_results)} filtered results")
+            return final_results
+            
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def _get_recent_transcript_ids(self, limit: int) -> set[int]:
+        """Return IDs of the most recent transcripts (by created_at DESC)"""
+        try:
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT id FROM transcript_records ORDER BY created_at DESC LIMIT ?",
+                    (limit,)
+                )
+                rows = cur.fetchall()
+                conn.close()
+                return {row[0] for row in rows}
+        except Exception as e:
+            logger.error(f"[RAG] Failed to load recent transcript ids: {e}")
+            return set()
+    
+    def add_memory(
+        self,
+        title: str,
+        body: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Add a memory/note to the system"""
+        with self.lock:
+            try:
+                memory_id = str(uuid.uuid4())
+                doc_id = f"mem_{memory_id}"
+                timestamp = datetime.utcnow().isoformat()
+                
+                # Generate embedding
+                text = f"{title}\n{body}"
+                embedding = self.get_embedding(text)
+                
+                # Store in document store
+                self.document_store[doc_id] = {
+                    'id': doc_id,
+                    'text': text,
+                    'type': 'memory',
+                    'memory_id': memory_id,
+                    'title': title,
+                    'body': body,
+                    'metadata': metadata or {},
+                    'created_at': timestamp
+                }
+                
+                # Store in database
+                conn = self._connect()
+                cur = conn.cursor()
+                
+                cur.execute("""
+                    INSERT INTO memories
+                    (memory_id, title, body, metadata, embedding, doc_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    memory_id,
+                    title,
+                    body,
+                    json.dumps(metadata) if metadata else None,
+                    embedding.tobytes(),
+                    doc_id,
+                    timestamp
+                ))
+                
+                conn.commit()
+                conn.close()
+                
+                # Add to FAISS
+                self.faiss_index.add(embedding.reshape(1, -1))
+                self._save_faiss_index()
+                
+                logger.info(f"Memory added: {memory_id}")
+                return memory_id
+                
+            except Exception as e:
+                logger.error(f"Failed to add memory: {e}")
+                raise
+    
+    def get_transcript(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get full transcript by job_id"""
+        try:
+            conn = self._connect()
+            cur = conn.cursor()
+            
+            # Get transcript record
+            cur.execute("SELECT * FROM transcript_records WHERE job_id = ?", (job_id,))
+            record = cur.fetchone()
+            
+            if not record:
+                conn.close()
+                return None
+            
+            # Get segments
+            cur.execute("""
+                SELECT * FROM transcript_segments 
+                WHERE transcript_id = ? 
+                ORDER BY seq
+            """, (record['id'],))
+            segments = cur.fetchall()
+            
+            conn.close()
+            
+            return {
+                'job_id': record['job_id'],
+                'session_id': record['session_id'],
+                'full_text': record['full_text'],
+                'audio_duration': record['audio_duration'],
+                'timestamp': record['timestamp'],
+                'created_at': record['created_at'],
+                'segments': [
+                    {
+                        'seq': seg['seq'],
+                        'text': seg['text'],
+                        'speaker': seg['speaker'],
+                        'start_time': seg['start_time'],
+                        'end_time': seg['end_time'],
+                        'emotion': seg['emotion'],
+                        'emotion_confidence': seg['emotion_confidence'],
+                        'emotion_scores': json.loads(seg['emotion_scores']) if seg['emotion_scores'] else None,
+                        'audio_metrics': json.loads(seg['audio_metrics']) if seg['audio_metrics'] else None
+                    }
+                    for seg in segments
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Failed to get transcript: {e}")
+            return None
+    
+    def get_recent_transcripts(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent transcripts for UI with speaker and emotion data"""
+        try:
+            conn = self._connect()
+            cur = conn.cursor()
+            
+            # Only get transcripts with actual text content
+            cur.execute("""
+                SELECT * FROM transcript_records 
+                WHERE full_text IS NOT NULL AND full_text != ''
+                ORDER BY created_at DESC 
+                LIMIT ?
+            """, (limit,))
+            records = cur.fetchall()
+            
+            results = []
+            for rec in records:
+                # Get segments for this transcript
+                cur.execute("""
+                    SELECT speaker, emotion, text, emotion_confidence, 
+                           emotion_scores, start_time, end_time
+                    FROM transcript_segments 
+                    WHERE transcript_id = ? 
+                    ORDER BY seq
+                """, (rec['id'],))
+                segments = cur.fetchall()
+                
+                # Extract unique speakers and dominant emotion
+                speakers = list(set([seg['speaker'] for seg in segments if seg['speaker']]))
+                emotions = [seg['emotion'] for seg in segments if seg['emotion']]
+                dominant_emotion = max(set(emotions), key=emotions.count) if emotions else None
+                
+                results.append({
+                    'job_id': rec['job_id'],
+                    'session_id': rec['session_id'],
+                    'full_text': rec['full_text'],  # Return full text, let frontend handle truncation
+                    'audio_duration': rec['audio_duration'],
+                    'timestamp': rec['timestamp'],
+                    'created_at': rec['created_at'],
+                    'speakers': speakers,
+                    'dominant_emotion': dominant_emotion,
+                    'segment_count': len(segments),
+                    'segments': [
+                        {
+                            'speaker': seg['speaker'],
+                            'emotion': seg['emotion'],
+                            'text': seg['text'],
+                            'emotion_confidence': seg['emotion_confidence'],
+                            'start_time': seg['start_time'],
+                            'end_time': seg['end_time']
+                        }
+                        for seg in segments
+                    ]
+                })
+            
+            conn.close()
+            return results
+        except Exception as e:
+            logger.error(f"Failed to get recent transcripts: {e}")
+            return []
+
+    def get_emotion_stats(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Aggregate emotion counts across transcript segments"""
+        try:
+            conn = self._connect()
+            cur = conn.cursor()
+
+            conditions = ["ts.emotion IS NOT NULL", "ts.emotion != ''"]
+            params: List[Any] = []
+
+            if start_date:
+                start_iso = f"{start_date}T00:00:00"
+                conditions.append("tr.created_at >= ?")
+                params.append(start_iso)
+            if end_date:
+                end_iso = f"{end_date}T23:59:59"
+                conditions.append("tr.created_at <= ?")
+                params.append(end_iso)
+
+            where_clause = " AND ".join(conditions)
+
+            cur.execute(
+                f"""
+                SELECT ts.emotion AS emotion, COUNT(*) AS count
+                FROM transcript_segments ts
+                JOIN transcript_records tr ON ts.transcript_id = tr.id
+                WHERE {where_clause}
+                GROUP BY ts.emotion
+                ORDER BY count DESC
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+
+            total_analyzed = sum(row["count"] for row in rows)
+
+            conn.close()
+
+            return {
+                "total_analyzed": total_analyzed,
+                "emotions": [
+                    {"emotion": row["emotion"], "count": row["count"]}
+                    for row in rows
+                ],
+            }
+        except Exception as e:
+            logger.error(f"[RAG] Failed to compute emotion stats: {e}")
+            return {"total_analyzed": 0, "emotions": []}
+    
+    def list_memories(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """List all memories with pagination"""
+        logger.info(f"📋 [MEMORY-LIST] Listing memories (limit={limit}, offset={offset})")
+        
+        try:
+            conn = self._connect()
+            cur = conn.cursor()
+            
+            # Check if table exists
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memories'")
+            if not cur.fetchone():
+                logger.warning("⚠️ [MEMORY-LIST] Table 'memories' does not exist")
+                conn.close()
+                return []
+            
+            # Get paginated memories
+            cur.execute("""
+                SELECT memory_id, title, body, metadata, created_at 
+                FROM memories 
+                ORDER BY created_at DESC 
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+            
+            memories = cur.fetchall()
+            conn.close()
+            
+            result = [
+                {
+                    'memory_id': mem['memory_id'],
+                    'title': mem['title'],
+                    'body': mem['body'],
+                    'metadata': json.loads(mem['metadata']) if mem['metadata'] else {},
+                    'created_at': mem['created_at']
+                }
+                for mem in memories
+            ]
+            
+            logger.info(f"✅ [MEMORY-LIST] Returning {len(result)} memories")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ [MEMORY-LIST] Failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def search_memories(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search memories using semantic search"""
+        logger.info(f"🔍 [MEMORY-SEARCH] Query: '{query}' (limit={limit})")
+        
+        try:
+            # Use semantic search with type filter
+            results = self.search_semantic(
+                query=query,
+                top_k=limit,
+                doc_type='memory'
+            )
+            
+            # Convert to memory format
+            memories = []
+            for result in results:
+                metadata = result.get('metadata', {})
+                memories.append({
+                    'memory_id': metadata.get('memory_id'),
+                    'title': metadata.get('title'),
+                    'body': metadata.get('body'),
+                    'score': result.get('score'),
+                    'metadata': metadata.get('metadata', {}),
+                    'created_at': metadata.get('created_at')
+                })
+            
+            logger.info(f"✅ [MEMORY-SEARCH] Returning {len(memories)} results")
+            return memories
+            
+        except Exception as e:
+            logger.error(f"❌ [MEMORY-SEARCH] Failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def _save_faiss_index(self):
+        """Save FAISS index and document store to disk"""
+        try:
+            faiss.write_index(self.faiss_index, str(self.faiss_index_path))
+            
+            # Save document store
+            doc_store_path = Path(str(self.faiss_index_path) + ".docs")
+            with open(doc_store_path, 'w', encoding='utf-8') as f:
+                json.dump(self.document_store, f)
+            
+            logger.debug("FAISS index and document store saved")
+        except Exception as e:
+            logger.error(f"Failed to save FAISS index: {e}")
+
+
+# ============================================================================
+# FASTAPI APPLICATION
+# ============================================================================
+
+
+class ServiceAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware for JWT service authentication (Phase 3: Enforce JWT-only + replay)."""
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth for health checks
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        jwt_token = request.headers.get("X-Service-Token")
+        if not jwt_token or not service_auth:
+            logger.error(f"❌ Missing JWT for {request.url.path}")
+            return JSONResponse(status_code=401, content={"detail": "Missing service token"})
+
+        try:
+            # Enforce allowed services and audience
+            allowed = ["gateway", "transcription-service", "gemma-service"]
+            payload = service_auth.verify_token(jwt_token, allowed_services=allowed, expected_aud="internal")
+
+            # Replay protection
+            from shared.security.service_auth import get_replay_protector
+            import time as _t
+            ttl = max(10, int(payload["expires_at"] - _t.time()) + 10)
+            ok, reason = get_replay_protector().check_and_store(payload.get("request_id", ""), ttl)
+            if not ok:
+                logger.error(f"❌ JWT replay blocked: reason={reason}")
+                return JSONResponse(status_code=401, content={"detail": "Replay detected"})
+
+            rid_short = str(payload.get('request_id',''))[:8]
+            logger.info(f"✅ JWT OK s={payload.get('service_id')} aud=internal rid={rid_short} path={request.url.path}")
+            return await call_next(request)
+        except Exception as e:
+            logger.error(f"❌ JWT rejected: {e} path={request.url.path}")
+            return JSONResponse(status_code=401, content={"detail": "Invalid service token"})
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager"""
+    global rag_service, service_auth
+    
+    logger.info("Starting RAG Service with FAISS vector search...")
+    
+    # Initialize service auth (Phase 3)
+    try:
+        from shared.security.secrets import get_secret
+        from shared.security.service_auth import get_service_auth
+        jwt_secret = get_secret("jwt_secret", default="dev_jwt_secret")
+        if jwt_secret:
+            service_auth = get_service_auth(service_id="rag-service", service_secret=jwt_secret)
+            logger.info("✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected)")
+        else:
+            logger.warning("jwt_secret not found; service auth unavailable")
+        rag_db_key = get_secret("rag_db_key")
+        if rag_db_key:
+            logger.info("RAG DB encryption key loaded from secrets")
+        else:
+            logger.warning("RAG DB encryption key not found; database will be stored in plaintext")
+    except Exception as e:
+        logger.error(f"❌ JWT service auth initialization failed: {e}")
+        raise
+
+    try:
+        rag_service = RAGService(
+            db_path=DB_PATH,
+            faiss_index_path=FAISS_INDEX_PATH,
+            embedding_model_name=EMBEDDING_MODEL,
+            db_encryption_key=rag_db_key,
+        )
+        logger.info("✅ RAG Service started successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to start RAG Service: {e}")
+        raise
+    
+    yield
+    
+    logger.info("RAG Service shutting down...")
+
+
+app = FastAPI(
+    title="RAG Service",
+    version="2.0.0",
+    description="Vector-based RAG with FAISS semantic search",
+    lifespan=lifespan
+)
+
+# Add JWT middleware (Phase 2: Permissive)
+app.add_middleware(ServiceAuthMiddleware)
+
+
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "RAG",
+        "version": "2.0.0",
+        "faiss_documents": rag_service.faiss_index.ntotal if rag_service else 0,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_dim": EMBEDDING_DIM
+    }
+
+
+@app.post("/index/transcript")
+def index_transcript(
+    request: TranscriptIndexRequest,
+):
+    """Index a full transcript with segments and metadata"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    try:
+        # Convert Pydantic models to dicts
+        segments_dict = [seg.model_dump() for seg in request.segments]
+        
+        transcript_id = rag_service.index_transcript(
+            job_id=request.job_id,
+            session_id=request.session_id,
+            full_text=request.full_text,
+            audio_duration=request.audio_duration,
+            segments=segments_dict
+        )
+        
+        return {
+            "success": True,
+            "transcript_id": transcript_id,
+            "job_id": request.job_id,
+            "segments_indexed": len(request.segments)
+        }
+    except Exception as e:
+        logger.error(f"Failed to index transcript: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search/semantic")
+def search_semantic(
+    request: SemanticSearchRequest,
+):
+    """Semantic search using vector similarity"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    try:
+        results = rag_service.search_semantic(
+            query=request.query,
+            top_k=request.top_k,
+            doc_type=request.doc_type,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            last_n_transcripts=request.last_n_transcripts,
+            speakers=request.speakers,
+            bias_emotions=request.bias_emotions
+        )
+        
+        return {
+            "success": True,
+            "query": request.query,
+            "results": results,
+            "count": len(results)
+        }
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memory/add")
+def add_memory(
+    request: MemoryAddRequest,
+):
+    """Add a memory/note"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    try:
+        memory_id = rag_service.add_memory(
+            title=request.title,
+            body=request.body,
+            metadata=request.metadata
+        )
+        
+        return {
+            "success": True,
+            "memory_id": memory_id
+        }
+    except Exception as e:
+        logger.error(f"Failed to add memory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/transcript/{job_id}")
+def get_transcript(
+    job_id: str,
+):
+    """Get full transcript by job_id"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    transcript = rag_service.get_transcript(job_id)
+    
+    if not transcript:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    
+    return {"success": True, "transcript": transcript}
+
+
+@app.get("/transcripts/recent")
+def get_recent_transcripts(
+    limit: int = 10,
+):
+    """Get recent transcripts"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    transcripts = rag_service.get_recent_transcripts(limit=limit)
+    
+    return {
+        "success": True,
+        "transcripts": transcripts,
+        "count": len(transcripts)
+    }
+
+# ============================================================================
+# Memory Endpoints
+# ============================================================================
+
+@app.get("/memory/list")
+def list_memories(
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List all memories with pagination"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    memories = rag_service.list_memories(limit=limit, offset=offset)
+    
+    return {
+        "success": True,
+        "memories": memories,
+        "count": len(memories)
+    }
+
+
+@app.get("/memory/emotions/stats")
+def memory_emotion_stats(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    """Return aggregated emotion statistics across transcripts"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+
+    stats = rag_service.get_emotion_stats(start_date=start_date, end_date=end_date)
+
+    return {
+        "success": True,
+        "start_date": start_date,
+        "end_date": end_date,
+        **stats,
+    }
+
+@app.post("/memory/search")
+def search_memories(
+    request: Dict[str, Any],
+):
+    """Search memories by query"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    query = request.get("q", request.get("query", ""))
+    limit = request.get("top_k", request.get("limit", 10))
+    
+    memories = rag_service.search_memories(query=query, limit=limit)
+    
+    return {
+        "success": True,
+        "memories": memories,
+        "count": len(memories)
+    }
+
+@app.get("/memory/stats")
+def get_memory_stats(
+):
+    """Get memory statistics"""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    
+    # Count memories from database
+    try:
+        conn = rag_service._connect()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) as count FROM memories WHERE body IS NOT NULL AND body != ''")
+        total_memories = cur.fetchone()[0]
+        conn.close()
+        
+        return {
+            "success": True,
+            "total_memories": total_memories,
+            "faiss_documents": rag_service.faiss_index.ntotal if rag_service.faiss_index else 0
+        }
+    except Exception as e:
+        logger.error(f"Failed to get memory stats: {e}")
+        return {
+            "success": True,
+            "total_memories": 0,
+            "faiss_documents": rag_service.faiss_index.ntotal if rag_service.faiss_index else 0
+        }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8004, log_level="info")

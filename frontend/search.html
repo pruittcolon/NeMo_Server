@@ -15,9 +15,12 @@
   <link rel="stylesheet" href="assets/css/components.css">
   <link rel="stylesheet" href="assets/css/animations.css">
   
-  <script src="assets/js/api.js"></script>
-  <script src="assets/js/app.js"></script>
-  <script src="assets/js/auth.js"></script>
+  <script>
+    window.__ASSET_VERSION__ = '2024110101';
+  </script>
+  <script src="assets/js/api.js?v=2024110101"></script>
+  <script src="assets/js/app.js?v=2024110101"></script>
+  <script src="assets/js/auth.js?v=2024110101"></script>
 </head>
 <body>
   
@@ -125,36 +128,105 @@
     const emptyState = document.getElementById('empty-state');
     const resultsTitle = document.getElementById('results-title');
 
+    const STOPWORDS = new Set(['the', 'a', 'an', 'of', 'and', 'or', 'to', 'in', 'on', 'at']);
+
     let currentQuery = '';
     let currentFilter = 'all';
 
-    // Debounced search
+    function getDateRange(filter) {
+      const today = new Date();
+      const start = new Date(today);
+
+      switch (filter) {
+        case 'today':
+          start.setHours(0, 0, 0, 0);
+          return {
+            start_date: start.toISOString().split('T')[0],
+            end_date: today.toISOString().split('T')[0],
+          };
+        case 'week':
+          start.setDate(today.getDate() - 7);
+          return {
+            start_date: start.toISOString().split('T')[0],
+            end_date: today.toISOString().split('T')[0],
+          };
+        case 'month':
+          start.setDate(today.getDate() - 30);
+          return {
+            start_date: start.toISOString().split('T')[0],
+            end_date: today.toISOString().split('T')[0],
+          };
+        default:
+          return {};
+      }
+    }
+
+    function buildSearchPayload(query) {
+      const payload = {
+        query,
+        top_k: 30,
+        types: ['transcript_segment', 'memory'],
+        last_n_transcripts: 100,
+      };
+
+      if (currentFilter && currentFilter !== 'all') {
+        Object.assign(payload, getDateRange(currentFilter));
+      }
+
+      return payload;
+    }
+
+    function formatTimestamp(seconds) {
+      if (seconds === null || seconds === undefined) return null;
+      const value = Number(seconds);
+      if (Number.isNaN(value)) return null;
+      const minutes = Math.floor(value / 60);
+      const secs = Math.floor(value % 60);
+      return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    function viewTranscript(jobId, startSeconds) {
+      if (!jobId) return;
+      const timestamp = typeof startSeconds === 'number' && !Number.isNaN(startSeconds)
+        ? `&t=${Math.max(0, Math.floor(startSeconds))}`
+        : '';
+      window.location.href = `transcripts.html?job=${encodeURIComponent(jobId)}${timestamp}`;
+    }
+    window.viewTranscript = viewTranscript;
+
     const performSearch = debounce(async () => {
       const query = searchInput.value.trim();
       currentQuery = query;
 
-      // Show loading
       loadingState.classList.remove('hidden');
       resultsContainer.innerHTML = '';
       emptyState.classList.add('hidden');
 
       try {
-        let results;
-        if (query) {
-          results = await api.searchTranscripts(query, 50);
-          resultsTitle.textContent = `Search Results for "${query}"`;
-        } else {
-          results = await api.getAllTranscripts(20);
-          resultsTitle.textContent = 'Recent Transcripts';
-        }
+        const payload = buildSearchPayload(query);
+        const unifiedResult = await api.searchUnified(payload);
+        const items = unifiedResult?.items || [];
 
         loadingState.classList.add('hidden');
 
-        if (results && results.results && results.results.length > 0) {
-          displayResults(results.results);
-        } else {
+        if (items.length === 0) {
+          console.debug('[SEARCH] No items after unified search', { query, payload });
           emptyState.classList.remove('hidden');
+          resultsTitle.textContent = query ? `Search Results for "${query}"` : 'Recent Transcripts';
+          return;
         }
+
+        if (unifiedResult?.fallback) {
+          resultsTitle.textContent = query
+            ? 'Showing recent transcripts (query was too short or returned no matches)'
+            : 'Recent Transcripts';
+        } else if (query) {
+          resultsTitle.textContent = `Search Results for "${query}"`;
+        } else {
+          resultsTitle.textContent = 'Recent Transcripts';
+        }
+
+        displayResults(items);
       } catch (error) {
         console.error('Search failed:', error);
         loadingState.classList.add('hidden');
@@ -163,50 +235,69 @@
       }
     }, 500);
 
-    // Display results
-    function displayResults(results) {
+    function displayResults(items) {
       resultsContainer.innerHTML = '';
 
-      results.forEach((result, index) => {
+      items.forEach((item, index) => {
+        const type = item.type || 'result';
+        const speaker = item.speaker || (type === 'memory' ? 'Memory Note' : '');
+        const title = item.title || speaker || 'Result';
+        const snippet = item.snippet || item.text || '';
+        const score = item.score || 0;
+        const emotion = item.emotion || null;
+        const timestampLabel = item.timestamp_label || formatTimestamp(item.start_time);
+        const createdLabel = item.created_at ? new Date(item.created_at).toLocaleString() : null;
+        const jobId = item.job_id || item.transcript_id;
+        const startSeconds = item.start_time;
+
         const resultEl = document.createElement('div');
         resultEl.className = 'card fade-in-up';
-        resultEl.style.animationDelay = `${index * 50}ms`;
+        resultEl.style.animationDelay = `${index * 40}ms`;
         resultEl.style.marginBottom = '1rem';
 
-        const avatar = createSpeakerAvatar(result.speaker || 'UNKNOWN');
-        const emotion = result.emotion ? createEmotionBadge(result.emotion) : '';
+        const avatar = createSpeakerAvatar(speaker || 'Result');
+        const emotionBadge = emotion ? createEmotionBadge(emotion) : null;
+
+        const metaPieces = [];
+        if (timestampLabel) metaPieces.push(`at ${timestampLabel}`);
+        if (createdLabel) metaPieces.push(createdLabel);
+        const metaLine = metaPieces.join(' • ');
+
+        const viewButton = jobId
+          ? `<button class="btn btn-ghost btn-sm" onclick="viewTranscript('${jobId}', ${startSeconds ?? 'null'})">View</button>`
+          : '';
 
         resultEl.innerHTML = `
           <div class="card-header">
-            <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1;">
               ${avatar.outerHTML}
-              <div>
-                <div style="font-weight: 600;">${escapeHTML(result.speaker || 'Unknown')}</div>
-                <div class="text-muted" style="font-size: 0.75rem;">${formatTime(result.timestamp)}</div>
+              <div style="flex: 1;">
+                <div style="font-weight: 600;">${escapeHTML(title)}</div>
+                <div class="text-muted" style="font-size: 0.75rem;">
+                  ${escapeHTML(speaker || '')}${metaLine ? ` • ${escapeHTML(metaLine)}` : ''}
+                </div>
               </div>
             </div>
-            ${emotion ? emotion.outerHTML : ''}
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              ${emotionBadge ? emotionBadge.outerHTML : ''}
+              ${score ? `<span class="badge" style="background: var(--accent-color); color: white;">${(score * 100).toFixed(0)}%</span>` : ''}
+            </div>
           </div>
           <div class="card-body">
-            ${highlightText(result.text, currentQuery)}
+            ${highlightText(snippet, currentQuery)}
           </div>
           <div class="card-footer">
-            <span class="text-muted" style="font-size: 0.875rem;">
-              Job ID: ${escapeHTML(result.job_id || 'N/A')}
-            </span>
-            <button class="btn btn-ghost btn-sm" onclick="viewFullTranscript('${result.job_id}')">
-              View Full
-            </button>
+            <span class="text-muted" style="font-size: 0.8rem;">${escapeHTML(type)}</span>
+            <div style="display: flex; gap: 0.5rem;">
+              ${viewButton}
+            </div>
           </div>
         `;
 
         resultsContainer.appendChild(resultEl);
       });
-    }
 
-    // View full transcript
-    function viewFullTranscript(jobId) {
-      window.location.href = `transcripts.html?job=${jobId}`;
+      lucide.createIcons();
     }
 
     // Filter chips
@@ -224,15 +315,11 @@
 
     // Initialize page with authentication
     async function initPage() {
-      // Enforce authentication
       const authenticated = await Auth.init({ requireAuth: true });
       if (!authenticated) return;
-      
-      // Initial load
       performSearch();
     }
-    
-    // Call on DOM ready
+
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', initPage);
     } else {
@@ -242,5 +329,3 @@
 
 </body>
 </html>
-
-

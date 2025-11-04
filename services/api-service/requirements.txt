@@ -1,0 +1,7 @@
+# API Service Dependencies
+# Note: This service is a placeholder for future API endpoints
+# Currently all API functionality is handled by api-gateway service
+
+fastapi==0.110.3
+uvicorn[standard]==0.30.6
+pydantic==2.10.6

@@ -20,7 +20,14 @@ const Auth = {
       const data = await response.json();
       
       if (data.valid && data.user) {
-        this.currentUser = data.user;
+        // Normalize user object to always have username/user_id/role
+        const raw = data.user;
+        this.currentUser = {
+          username: raw.username || raw.user_id || 'user',
+          user_id: raw.user_id || raw.username || 'user',
+          role: raw.role || 'viewer',
+          speaker_id: raw.speaker_id || null
+        };
         return true;
       } else {
         this.currentUser = null;
@@ -43,7 +50,7 @@ const Auth = {
     if (!isAuthenticated) {
       // Redirect to login
       console.warn('[AUTH] Not authenticated, redirecting to login');
-      window.location.href = '/ui/login.html';
+      window.location.href = 'login.html';
       return false;
     }
     
@@ -98,11 +105,11 @@ const Auth = {
       });
       
       this.currentUser = null;
-      window.location.href = '/ui/login.html';
+      window.location.href = 'login.html';
     } catch (error) {
       console.error('Logout failed:', error);
       // Redirect anyway
-      window.location.href = '/ui/login.html';
+      window.location.href = 'login.html';
     }
   },
   
@@ -225,4 +232,3 @@ const Auth = {
 document.addEventListener('DOMContentLoaded', async () => {
   await Auth.checkSession();
 });
-

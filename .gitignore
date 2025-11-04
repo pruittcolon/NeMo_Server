@@ -1,91 +1,137 @@
-# ==========================================
-# USER DATA & SECRETS
-# ==========================================
-instance/
+# ============================================================================
+# Nemo Server .gitignore
+# ============================================================================
+
+# Environment & Secrets (CRITICAL - DO NOT COMMIT)
+# ============================================================================
+docker/.env
 .env
 .env.local
-*.db
-*.db-journal
-*.db-shm
-*.db-wal
+.env.*.local
 
-# ==========================================
-# VIRTUAL ENVIRONMENTS
-# ==========================================
-.venv/
-venv/
-env/
-ENV/
+# Docker secrets directory - contains all sensitive keys
+docker/secrets/*
+!docker/secrets/.gitkeep
+!docker/secrets/README.md
 
-# ==========================================
-# MODEL FILES (LARGE - DOWNLOAD SEPARATELY)
-# ==========================================
-models/*.gguf
-models/*.nemo
-models/hf_home/
-models/models--*/
-*.safetensors
-*.bin
-*.pt
-*.pth
+# Individual secret files (redundant but explicit)
+*.key
+*.pem
+*.crt
+*_secret
+*_password
+*_token
+jwt_secret
+session_key
+huggingface_token
 
-# ==========================================
-# LOGS & CACHE
-# ==========================================
-logs/
-*.log
+# Python
+# ============================================================================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+*.py[cod]
+*$py.class
 *.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+.installed.cfg
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing & Coverage
+# ============================================================================
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 .tox/
+.nox/
 .hypothesis/
+*.cover
+*.log
+nosetests.xml
+coverage.xml
+*.pytest_cache
 
-# ==========================================
-# DEVELOPMENT & DEBUG
-# ==========================================
-AUTH_DEBUG_BACKUP/
-implement_fixes/
-SOURCE_BACKUP_*/
-.cursor/
+# Virtual Environments
+# ============================================================================
+.venv/
+venv/
+ENV/
+env/
+virtualenv/
+vllm_test_env/
+
+# Docker
+# ============================================================================
+*.tar
+docker-compose.override.yml
+
+# Logs & Runtime Data
+# ============================================================================
+logs/
+*.log
+*.err
+*.log.*
+*.bak
+*.bak_*
+*.old
+
+# Runtime instance data (databases, uploads, cache)
+instance/
+data/
+docker/rag_instance/
+docker/faiss_index/
+docker/gateway_instance/
+cache/
+uploads/
+enrollment/
+
+# ML Models & Weights (large files)
+# ============================================================================
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.h5
+*.pkl
+*.joblib
+
+# Pre-built wheels (should be in docker/wheels/ but gitignored)
+docker/wheels/*.whl
+*.whl
+
+# Build Artifacts
+# ============================================================================
+dist/
+build/
+*.egg-info/
+.eggs/
+target/
+out/
+
+# IDE & Editor Files
+# ============================================================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.DS_Store
+*.sublime-*
+.project
+.classpath
+.settings/
+.metadata/
 
-# ==========================================
-# PERSONAL/SENSITIVE DATA
-# ==========================================
-instance/enrollment/**/*.wav
-instance/enrollment/**/*.npy
-instance/uploads/
-instance/cache/
-*.npy
-
-# ==========================================
-# BUILD & DISTRIBUTION
-# ==========================================
-build/
-dist/
-*.egg-info/
-*.egg
-.eggs/
-wheels/
-
-# ==========================================
-# DOCKER
-# ==========================================
-.dockerignore
-
-# ==========================================
-# OPERATING SYSTEM
-# ==========================================
+# OS Files
+# ============================================================================
 .DS_Store
 .DS_Store?
 ._*
@@ -95,38 +141,60 @@ ehthumbs.db
 Thumbs.db
 desktop.ini
 
-# ==========================================
-# FLUTTER APP (EvenDemoApp-main)
-# ==========================================
-EvenDemoApp-main/.env
-EvenDemoApp-main/build/
-EvenDemoApp-main/.dart_tool/
-EvenDemoApp-main/.flutter-plugins
-EvenDemoApp-main/.flutter-plugins-dependencies
-EvenDemoApp-main/.packages
-EvenDemoApp-main/pubspec.lock
+# Temporary Files
+# ============================================================================
+*.tmp
+*.temp
+.temp/
+tmp/
+*.cache
+.cache/
 
-# Android build artifacts
-EvenDemoApp-main/android/.gradle/
-EvenDemoApp-main/android/app/.cxx/
-EvenDemoApp-main/android/local.properties
-
-# Flutter build artifacts with copied .env
-EvenDemoApp-main/build/app/intermediates/
-EvenDemoApp-main/build/unit_test_assets/
-EvenDemoApp-main/build/flutter_assets/
-
-# ==========================================
-# JUPYTER NOTEBOOKS
-# ==========================================
+# Jupyter Notebooks
+# ============================================================================
 .ipynb_checkpoints/
 *.ipynb
 
-# ==========================================
-# TEMPORARY FILES
-# ==========================================
-tmp/
-temp/
-*.tmp
-*.bak
+# Documentation Build
+# ============================================================================
+docs/_build/
+docs/.doctrees/
+site/
+
+# Database Files
+# ============================================================================
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Backup Files
+# ============================================================================
 *.backup
+*.bak
+*~
+
+# Flutter/Dart (for EvenDemoApp)
+# ============================================================================
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+
+# Keep certain directories but ignore contents
+# ============================================================================
+!logs/.gitkeep
+!models/.gitkeep
+!docker/faiss_index/.gitkeep
+!docker/rag_instance/.gitkeep
+!docker/gateway_instance/.gitkeep
+
+# Security - DO NOT COMMIT

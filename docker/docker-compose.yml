@@ -1,77 +1,326 @@
-version: '3.8'
-
 services:
-  nemo-server:
+  # ============================================================================
+  # Infrastructure Services
+  # ============================================================================
+  
+  redis:
+    image: redis:7-alpine
+    container_name: refactored_redis
+    restart: unless-stopped
+    # Phase 7: Bind to loopback only for dev (or remove ports entirely for prod)
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - nemo_network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: refactored_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nemo_queue
+      # Phase 5: Use secrets for credentials
+      POSTGRES_USER_FILE: /run/secrets/postgres_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    # Phase 7: Bind to loopback only for dev (or remove ports entirely for prod)
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - postgres_user
+      - postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$(cat /run/secrets/postgres_user)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - nemo_network
+
+  # ============================================================================
+  # GPU Coordinator Service
+  # ============================================================================
+  
+  gpu-coordinator:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
-    
-    image: nemo-server:latest
-    
-    container_name: nemo_server
-    
-    # GPU Configuration
+      dockerfile: docker/Dockerfile.queue
+    container_name: refactored_gpu_coordinator
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+      # Use secret for Postgres password via connection string
+      GPU_PAUSE_TIMEOUT: "12.0"
+      JWT_ONLY: "true"
+    # Phase 4: Remove host port mapping - internal only
+    # ports:
+    #   - "8002:8002"
+    # Mount secrets directory to /run/secrets for dev (read-only)
+    volumes:
+      - ./secrets:/run/secrets:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8002/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - nemo_network
+
+  # ============================================================================
+  # Gemma Service (GPU Requester)
+  # ============================================================================
+  
+  gemma-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gemma
+    container_name: refactored_gemma
+    restart: unless-stopped
+    environment:
+      GEMMA_MODEL_PATH: /app/models/gemma-3-4b-it-UD-Q4_K_XL.gguf  # 4-bit model (2.4GB) - Production
+      GEMMA_GPU_LAYERS: "-1"  # ALL layers on GPU
+      GEMMA_CONTEXT_SIZE: "2048"  # 2k context (saves RAM)
+      GEMMA_BATCH_SIZE: "512"  # Smaller batch to save RAM
+      GPU_COORDINATOR_URL: http://gpu-coordinator:8002
+      RAG_SERVICE_URL: http://rag-service:8004
+      JWT_ONLY: "true"
+    volumes:
+      - ../models:/app/models:ro
+      - ./secrets:/run/secrets:ro
+    # Phase 4: Remove host port mapping - internal only
+    # ports:
+    #   - "8001:8001"
     deploy:
       resources:
-        limits:
-          memory: 12G
         reservations:
-          memory: 8G
           devices:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=0
-      - CUDA_VISIBLE_DEVICES=0
-      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-      - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=info
-      - INSTANCE_DIR=/app/instance
-      - DB_PATH=/app/instance/memories.db
-      - FAISS_INDEX_PATH=/app/instance/faiss_index.bin
-    
-    ports:
-      - "8000:8000"
-    
-    volumes:
-      # HuggingFace cache (writable for model downloads)
-      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
-      
-      # Local models directory (contains Gemma GGUF)
-      - ../models:/app/models
-      
-      # Instance directory (database, uploads, cache)
-      - ../instance:/app/instance
-      
-      # Application data
-      - ../data:/app/data
-      
-      # Logs
-      - ../logs:/app/logs
-      
-      # Source code (for hot-reload during development)
-      - ../src:/app/src
-      
-      # Frontend (for hot-reload during development)
-      - ../frontend:/app/frontend
-    
+    depends_on:
+      gpu-coordinator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - nemo_network
+
+  # ============================================================================
+  # Transcription Service (GPU Owner)
+  # ============================================================================
+  
+  transcription-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.transcription
+    container_name: refactored_transcription
     restart: unless-stopped
-    
+    environment:
+      REDIS_URL: redis://redis:6379
+      EMOTION_SERVICE_URL: http://emotion-service:8005
+      RAG_SERVICE_URL: http://rag-service:8004
+      # Parakeet-TDT + Pyannote Diarization Strategy
+      TRANSCRIBE_STRATEGY: "parakeet"
+      PARAKEET_MODEL_ID: "nvidia/parakeet-tdt-0.6b-v2"
+      PARAKEET_CHUNK_DURATION: "300"
+      ENABLE_PYANNOTE: "true"
+      PYANNOTE_DEVICE: "cuda"
+      # PYANNOTE_MAX_SPEAKERS: "2"  # Uncomment to force specific number of speakers
+      # Legacy RNNT settings (kept for fallback)
+      NEMO_MODEL_NAME: "nvidia/parakeet-rnnt-0.6b"
+      HF_HOME: /app/models  # HuggingFace cache directory in image
+      JWT_ONLY: "true"
+    volumes:
+      - ./secrets:/run/secrets:ro
+    # Models are pre-downloaded in Docker image during build
+    # Phase 4: Remove host port mapping - internal only
+    # ports:
+    #   - "8003:8003"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+      gpu-coordinator:
+        condition: service_healthy
+      gemma-service:
+        condition: service_healthy  # WAIT for Gemma to load on GPU first!
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8003/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - nemo_network
+
+  # ============================================================================
+  # API Gateway (Frontend & Authentication)
+  # ============================================================================
+  
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    image: refactored-gateway:latest
+    container_name: refactored_gateway
+    restart: unless-stopped
+    environment:
+      GEMMA_URL: http://gemma-service:8001
+      RAG_URL: http://rag-service:8004
+      EMOTION_URL: http://emotion-service:8005
+      TRANSCRIPTION_URL: http://transcription-service:8003
+      ENABLE_DEMO_USERS: "true"
+      ALLOWED_ORIGINS: "http://127.0.0.1,http://localhost"
+      SESSION_COOKIE_SECURE: "false"
+      SESSION_COOKIE_SAMESITE: "lax"
+    volumes:
+      - ./gateway_instance:/app/instance
+      - ./secrets:/run/secrets:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Phase 1: Gateway is the only public-facing service
+    # For production, bind to 127.0.0.1 and use tunnel/reverse proxy
+    ports:
+      - "0.0.0.0:8000:8000"
+    # Secrets are mounted via a read-only bind to ./secrets for dev
+    depends_on:
+      gemma-service:
+        condition: service_healthy
+      rag-service:
+        condition: service_healthy
+      emotion-service:
+        condition: service_healthy
+      transcription-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      start_period: 60s
       retries: 3
-    
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    networks:
+      - nemo_network
+  
+  # ============================================================================
+  # RAG Service (Memory & Vector Search)
+  # ============================================================================
+  
+  rag-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rag
+    image: refactored-rag-service:latest
+    container_name: refactored_rag
+    restart: unless-stopped
+    environment:
+      EMBEDDING_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
+      DB_PATH: "/app/instance/rag.db"
+      FAISS_INDEX_PATH: "/app/faiss_index/index.bin"
+      HF_HOME: "/app/models"
+      JWT_ONLY: "true"
+    volumes:
+      - ./rag_instance:/app/instance
+      - ./faiss_index:/app/faiss_index
+      - ../models:/app/models
+      - ./secrets:/run/secrets:ro
+    # Phase 4: Remove host port mapping - internal only
+    # ports:
+    #   - "8004:8004"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - nemo_network
+  
+  # ============================================================================
+  # Emotion Service (Sentiment Analysis)
+  # ============================================================================
+  
+  emotion-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.emotion
+    image: refactored-emotion-service:latest
+    container_name: refactored_emotion
+    restart: unless-stopped
+    environment:
+      EMOTION_MODEL_PATH: "/app/models/emotion-english-distilroberta-base"
+      JWT_ONLY: "true"
+    volumes:
+      - ../models:/app/models:ro
+      - ./secrets:/run/secrets:ro
+    # Phase 4: Remove host port mapping - internal only
+    # ports:
+    #   - "8005:8005"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; r = requests.get('http://localhost:8005/health'); exit(0 if r.json().get('status') == 'healthy' and r.json().get('classifier_loaded') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - nemo_network
+
+# Phase 5: Define Docker secrets (read from files in docker/secrets/)
+secrets:
+  jwt_secret:
+    file: ./secrets/jwt_secret
+  service_api_key:
+    file: ./secrets/service_api_key
+  session_key:
+    file: ./secrets/session_key
+  postgres_user:
+    file: ./secrets/postgres_user
+  postgres_password:
+    file: ./secrets/postgres_password
+  users_db_key:
+    file: ./secrets/users_db_key
+  rag_db_key:
+    file: ./secrets/rag_db_key
+  redis_password:
+    file: ./secrets/redis_password
+  huggingface_token:
+    file: ./secrets/huggingface_token
 
 networks:
-  default:
-    name: nemo_network
+  nemo_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:

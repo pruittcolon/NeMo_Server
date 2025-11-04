@@ -4,10 +4,40 @@
  */
 
 class WhisperAPI {
-  constructor(baseURL = 'http://localhost:8000') {
-    this.baseURL = baseURL;
+  constructor(baseURL, options = {}) {
+    const globalOptions = (typeof window !== 'undefined' && window.NEMO_API_OPTIONS) || {};
+    const mergedOptions = { ...globalOptions, ...options };
+    // Default to same-origin in browsers; fall back to provided baseURL or localhost
+    const origin = (typeof window !== 'undefined' && window.location && window.location.origin) || '';
+    const fallback = (typeof window !== 'undefined' && window.API_BASE_URL) || baseURL || 'http://localhost:8000';
+    this.baseURL = (origin || fallback || '').replace(/\/+$/, '');
     this.cache = new Map();
     this.cacheTimeout = 5000; // 5 seconds
+    this.useLegacyRoutes = Boolean(mergedOptions.useLegacyRoutes || (typeof window !== 'undefined' && window.USE_LEGACY_API_ROUTES));
+    this.apiPrefix = this.useLegacyRoutes ? '' : '/api';
+    // CSRF config per backend defaults (gateway sets csrf_token cookie)
+    this.csrfCookieName = (typeof window !== 'undefined' && window.CSRF_COOKIE_NAME) || 'csrf_token';
+    this.csrfHeaderName = (typeof window !== 'undefined' && window.CSRF_HEADER_NAME) || 'X-CSRF-Token';
+  }
+
+  normalizePath(path) {
+    if (!path) return this.apiPrefix || '/';
+    let normalized = path.startsWith('/') ? path : `/${path}`;
+    if (this.useLegacyRoutes || normalized.startsWith('/api/')) {
+      return normalized;
+    }
+    if (!this.apiPrefix) {
+      return normalized;
+    }
+    return `${this.apiPrefix}${normalized}`.replace(/\/{2,}/g, '/');
+  }
+
+  buildURL(path) {
+    const normalizedPath = this.normalizePath(path);
+    if (!this.baseURL) {
+      return normalizedPath;
+    }
+    return `${this.baseURL}${normalizedPath}`;
   }
 
   /**
@@ -23,7 +53,7 @@ class WhisperAPI {
     }
 
     try {
-      const response = await fetch(`${this.baseURL}${path}`, {
+      const response = await fetch(this.buildURL(path), {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
@@ -34,7 +64,7 @@ class WhisperAPI {
       // Check for authentication errors
       if (response.status === 401) {
         console.warn('[API] Authentication required - redirecting to login');
-        window.location.href = '/ui/login.html';
+        window.location.href = 'login.html';
         throw new Error('Not authenticated');
       }
 
@@ -66,14 +96,27 @@ class WhisperAPI {
   /**
    * Generic POST request
    */
+  getCookie(name) {
+    if (typeof document === 'undefined') return '';
+    const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\[\]\\\/\+^])/g, '\\$1') + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
   async post(path, body) {
     try {
-      const response = await fetch(`${this.baseURL}${path}`, {
+      const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      };
+      const csrf = this.getCookie(this.csrfCookieName);
+      if (csrf) {
+        headers[this.csrfHeaderName] = csrf;
+      } else {
+        console.warn('[API] No CSRF token found in cookies; POST may be rejected');
+      }
+      const response = await fetch(this.buildURL(path), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
+        headers,
         credentials: 'include',  // Send cookies for authentication
         body: JSON.stringify(body),
       });
@@ -81,7 +124,7 @@ class WhisperAPI {
       // Check for authentication errors
       if (response.status === 401) {
         console.warn('[API] Authentication required - redirecting to login');
-        window.location.href = '/ui/login.html';
+        window.location.href = 'login.html';
         throw new Error('Not authenticated');
       }
 
@@ -108,16 +151,24 @@ class WhisperAPI {
    */
   async postForm(path, formData) {
     try {
-      const response = await fetch(`${this.baseURL}${path}`, {
+      const headers = {};
+      const csrf = this.getCookie(this.csrfCookieName);
+      if (csrf) {
+        headers[this.csrfHeaderName] = csrf;
+      } else {
+        console.warn('[API] No CSRF token found in cookies; POST_FORM may be rejected');
+      }
+      const response = await fetch(this.buildURL(path), {
         method: 'POST',
         credentials: 'include',  // Send cookies for authentication
+        headers,
         body: formData,
       });
 
       // Check for authentication errors
       if (response.status === 401) {
         console.warn('[API] Authentication required - redirecting to login');
-        window.location.href = '/ui/login.html';
+        window.location.href = 'login.html';
         throw new Error('Not authenticated');
       }
 
@@ -196,7 +247,7 @@ class WhisperAPI {
    * Get all transcripts
    */
   async getAllTranscripts(limit = 100) {
-    return await this.get(`/transcript/all?limit=${limit}`);
+    return await this.get(`/transcripts/recent?limit=${limit}`);
   }
 
   /**
@@ -216,9 +267,9 @@ class WhisperAPI {
   async enrollSpeaker(audioFile, speakerId) {
     const formData = new FormData();
     formData.append('audio', audioFile);
-    formData.append('speaker_id', speakerId);
+    formData.append('speaker', speakerId);  // Gateway expects 'speaker' not 'speaker_id'
 
-    return await this.postForm('/enroll', formData);
+    return await this.postForm('/enroll/upload', formData);
   }
 
   /**
@@ -236,7 +287,7 @@ class WhisperAPI {
    * Get all speakers
    */
   async getSpeakers() {
-    return await this.get('/speaker/list');
+    return await this.get('/enroll/speakers');
   }
 
   // ============================================================================
@@ -257,13 +308,6 @@ class WhisperAPI {
     return await this.post('/analyze/prepare_emotion_analysis', { ...defaults, ...params });
   }
 
-  /**
-   * Get emotion stats
-   */
-  async getEmotionStats(timePeriod = 'today') {
-    return await this.get(`/analyze/emotion_stats?time_period=${timePeriod}`);
-  }
-
   // ============================================================================
   // MEMORY / RAG
   // ============================================================================
@@ -272,8 +316,8 @@ class WhisperAPI {
    * Search memories
    */
   async searchMemories(query, limit = 10) {
-    // Backend expects 'q' parameter, not 'query'
-    return await this.get(`/memory/search?q=${encodeURIComponent(query)}&top_k=${limit}`);
+    // Backend expects POST with JSON body containing 'q' and 'top_k'
+    return await this.post('/memory/search', { q: query, top_k: limit });
   }
 
   /**
@@ -282,6 +326,13 @@ class WhisperAPI {
   async getAllMemories(limit = 100) {
     // Backend expects '/memory/list', not '/memory/all'
     return await this.get(`/memory/list?limit=${limit}`);
+  }
+
+  /**
+   * Get recent transcripts
+   */
+  async getRecentTranscripts(limit = 100) {
+    return await this.get(`/transcripts/recent?limit=${limit}`);
   }
 
   /**
@@ -353,6 +404,80 @@ class WhisperAPI {
     return await this.post('/memory/analyze', filters);
   }
 
+  /**
+   * Unified semantic search across transcripts and memories
+   * payload: { query, top_k, last_n_transcripts, start_date, end_date }
+   * Returns: { items: [...], count?, fallback? }
+   */
+  async searchUnified(payload = {}) {
+    const q = (payload.query || '').trim();
+    // Fallback: if no/short query, show recent transcripts
+    if (!q || q.length < 2) {
+      const limit = Number(payload.last_n_transcripts) || 50;
+      const recent = await this.get(`/transcripts/recent?limit=${limit}`);
+      const list = recent?.transcripts || recent?.items || recent || [];
+      const items = (Array.isArray(list) ? list : []).map((t) => {
+        const start = typeof t.start_time === 'number' ? t.start_time : null;
+        let ts = null;
+        if (typeof start === 'number') {
+          const m = Math.floor(start / 60);
+          const s = Math.floor(start % 60);
+          ts = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        }
+        return {
+          type: 'transcript_segment',
+          speaker: t.speaker || t.primary_speaker || '',
+          title: t.title || t.speaker || 'Transcript',
+          snippet: t.snippet || t.text || t.preview || '',
+          score: null,
+          emotion: t.emotion || null,
+          timestamp_label: t.timestamp_label || ts,
+          created_at: t.created_at || null,
+          job_id: t.job_id || t.transcript_id || null,
+          transcript_id: t.transcript_id || null,
+          start_time: start,
+        };
+      });
+      return { items, fallback: true };
+    }
+
+    const body = {
+      query: q,
+      top_k: Number(payload.top_k) || 30,
+      last_n_transcripts: Number(payload.last_n_transcripts) || 100,
+    };
+    if (payload.start_date || payload.startDate) body.start_date = payload.start_date || payload.startDate;
+    if (payload.end_date || payload.endDate) body.end_date = payload.end_date || payload.endDate;
+
+    const resp = await this.post('/search/semantic', body);
+    const results = resp?.results || [];
+    const items = results.map((r) => {
+      const md = r.metadata || {};
+      const start = typeof md.start_time === 'number' ? md.start_time : null;
+      let ts = null;
+      if (typeof start === 'number') {
+        const m = Math.floor(start / 60);
+        const s = Math.floor(start % 60);
+        ts = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      }
+      const title = r.type === 'memory' ? (md.title || 'Memory Note') : (md.speaker || 'Transcript');
+      return {
+        type: r.type || 'result',
+        speaker: md.speaker || (r.type === 'memory' ? 'Memory Note' : ''),
+        title,
+        snippet: r.text || '',
+        score: typeof r.score === 'number' ? r.score : 0,
+        emotion: md.emotion || null,
+        timestamp_label: ts,
+        created_at: md.created_at || null,
+        job_id: md.job_id || md.transcript_id || null,
+        transcript_id: md.transcript_id || null,
+        start_time: start,
+      };
+    });
+    return { items, count: items.length };
+  }
+
   // ============================================================================
   // GEMMA AI
   // ============================================================================
@@ -365,10 +490,37 @@ class WhisperAPI {
   }
 
   /**
-   * Synchronous Gemma chat
+   * Warmup Gemma - moves model to GPU and waits until ready
+   * CALL THIS FIRST before gemmaChat() for fast inference!
+   */
+  async gemmaWarmup() {
+    return await this.post('/gemma/warmup', {});
+  }
+
+  /**
+   * Synchronous Gemma chat (simple generate)
+   * NOTE: Call gemmaWarmup() first for fast GPU inference!
    */
   async gemmaChat(message) {
-    return await this.post('/analyze/chat', { message, max_length: 150 });
+    // Use /gemma/generate endpoint
+    const response = await this.post('/gemma/generate', { 
+      prompt: message, 
+      max_tokens: 200,
+      temperature: 0.7 
+    });
+    // Return in format expected by UI: { response: "text" }
+    return { response: response.text };
+  }
+  
+  /**
+   * Gemma generate (basic completion)
+   */
+  async gemmaGenerate(prompt, maxTokens = 200) {
+    return await this.post('/gemma/generate', { 
+      prompt, 
+      max_tokens: maxTokens,
+      temperature: 0.7
+    });
   }
 
   /**
@@ -389,7 +541,14 @@ class WhisperAPI {
    * Get Gemma stats
    */
   async getGemmaStats() {
-    return await this.get('/analyze/stats');
+    return await this.get('/gemma/stats');
+  }
+
+  /**
+   * RAG-enhanced Gemma chat (retrieves context from RAG)
+   */
+  async gemmaChatRag(payload) {
+    return await this.post('/gemma/chat-rag', payload);
   }
 
   // ============================================================================
@@ -425,7 +584,7 @@ class WhisperAPI {
    * Set base URL
    */
   setBaseURL(url) {
-    this.baseURL = url;
+    this.baseURL = (url || '').replace(/\/+$/, '');
     this.clearCache();
   }
 
@@ -449,5 +608,3 @@ const api = new WhisperAPI();
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { WhisperAPI, api };
 }
-
-

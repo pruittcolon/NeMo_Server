@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:demo_ai_even/services/app_logger.dart';
+import 'package:demo_ai_even/services/auth_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -81,6 +82,22 @@ class AsrHttpService {
         sendTimeout: const Duration(seconds: 180),
       ),
     );
+
+    // Add authentication headers from AuthService
+    final authService = AuthService.instance;
+    AppLogger.instance.log('ASR', 'Auth status: isAuthenticated=${authService.isAuthenticated}');
+    if (authService.isAuthenticated) {
+      final sessionToken = authService.sessionToken;
+      AppLogger.instance.log('ASR', 'Session token value: $sessionToken (length=${sessionToken?.length ?? 0})');
+      if (sessionToken != null) {
+        _dio.options.headers['Authorization'] = 'Bearer $sessionToken';
+        AppLogger.instance.log('ASR', '✅ Session token added to headers');
+      } else {
+        AppLogger.instance.log('ASR', '⚠️ Session token is null despite being authenticated');
+      }
+    } else {
+      AppLogger.instance.log('ASR', '⚠️ Not authenticated - requests may fail');
+    }
 
     _running = true;
     _seq = 0;
@@ -223,10 +240,19 @@ class AsrHttpService {
         'stream_id': _streamId,
       });
 
+      // Log headers being sent
+      AppLogger.instance.log('ASR', '📤 Headers being sent to /transcribe: ${_dio.options.headers}');
+
+      // Explicitly include Authorization header in the request options
+      final requestOptions = Options(
+        contentType: 'multipart/form-data',
+        headers: _dio.options.headers,
+      );
+
       final response = await _dio.post(
         '/transcribe',
         data: form,
-        options: Options(contentType: 'multipart/form-data'),
+        options: requestOptions,
       );
 
       if (response.statusCode == 200 && response.data is Map) {

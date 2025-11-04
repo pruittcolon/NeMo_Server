@@ -1,0 +1,78 @@
+# Transcription Service Dockerfile
+
+FROM python:3.12-slim
+
+LABEL maintainer="Nemo Server"
+LABEL description="Transcription Service with GPU Pause/Resume"
+
+WORKDIR /app
+
+ENV HF_HOME=/app/models
+
+# Install system dependencies for building Python packages with C/C++ extensions
+# Required for: texterrors (C++11), other NeMo dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    g++ \
+    gcc \
+    git \
+    libsndfile1 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies
+COPY services/transcription-service/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download NeMo Parakeet 0.6B model during build to avoid startup delay
+RUN python -c "from nemo.collections.asr.models import EncDecRNNTBPEModel; \
+    print('Downloading Parakeet 0.6B model...'); \
+    model = EncDecRNNTBPEModel.from_pretrained('nvidia/parakeet-rnnt-0.6b'); \
+    print('Model downloaded and cached successfully')"
+
+# Pre-download Parakeet-TDT CTC model during build
+RUN python -c "from nemo.collections.asr.models import EncDecCTCModelBPE; \
+    print('Downloading Parakeet-TDT 0.6B v2 model...'); \
+    model = EncDecCTCModelBPE.from_pretrained('nvidia/parakeet-tdt-0.6b-v2'); \
+    print('Parakeet-TDT model downloaded and cached successfully')"
+
+# Pre-download TitaNet speaker model during build
+RUN python -c "from nemo.collections.asr.models import EncDecSpeakerLabelModel; \
+    print('Downloading TitaNet speaker model...'); \
+    model = EncDecSpeakerLabelModel.from_pretrained('nvidia/speakerverification_en_titanet_large'); \
+    print('Speaker model downloaded and cached successfully')"
+
+# Pre-download Pyannote speaker-diarization model during build
+# Requires HuggingFace token at build time
+ARG HUGGINGFACE_TOKEN
+RUN if [ -n "$HUGGINGFACE_TOKEN" ]; then \
+    python -c "from pyannote.audio import Pipeline; \
+    print('Downloading Pyannote speaker-diarization-3.1...'); \
+    pipeline = Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token='$HUGGINGFACE_TOKEN'); \
+    print('Pyannote model downloaded and cached successfully')"; \
+    else \
+    echo "WARNING: HUGGINGFACE_TOKEN not provided, Pyannote model will be downloaded at runtime"; \
+    fi
+
+# Copy service code (use build arg to bust cache when code changes)
+ARG CACHEBUST=1
+COPY services/transcription-service/src /app/src
+
+# Copy shared modules
+COPY shared /app/shared
+
+# Create data directory
+RUN mkdir -p /app/data /app/uploads
+
+# Expose port
+EXPOSE 8003
+
+# Health check
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8003/health').raise_for_status()"
+
+# Run service
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8003"]
+
+
+

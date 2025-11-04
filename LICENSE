@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2025 Nemo Server Contributors
+Copyright (c) 2025 Pruitt Colon
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,3 +20,55 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+---
+
+## Third-Party Licenses
+
+This project uses the following third-party components:
+
+### NVIDIA NeMo Toolkit
+- License: Apache License 2.0
+- Copyright: NVIDIA Corporation
+- URL: https://github.com/NVIDIA/NeMo
+
+### Google Gemma Models
+- License: Gemma Terms of Use
+- Copyright: Google LLC
+- URL: https://ai.google.dev/gemma/terms
+
+### Transformers (Hugging Face)
+- License: Apache License 2.0
+- Copyright: Hugging Face Inc.
+- URL: https://github.com/huggingface/transformers
+
+### FAISS
+- License: MIT License
+- Copyright: Facebook, Inc.
+- URL: https://github.com/facebookresearch/faiss
+
+### llama.cpp
+- License: MIT License
+- Copyright: Georgi Gerganov
+- URL: https://github.com/ggerganov/llama.cpp
+
+### FastAPI
+- License: MIT License
+- Copyright: Sebastián Ramírez
+- URL: https://github.com/tiangolo/fastapi
+
+### PyTorch
+- License: BSD-3-Clause License
+- Copyright: Facebook, Inc.
+- URL: https://github.com/pytorch/pytorch
+
+### Redis
+- License: BSD-3-Clause License
+- Copyright: Redis Ltd.
+- URL: https://redis.io/
+
+### PostgreSQL
+- License: PostgreSQL License
+- Copyright: PostgreSQL Global Development Group
+- URL: https://www.postgresql.org/
+
+For complete license texts, see the respective project repositories.

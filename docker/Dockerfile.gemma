@@ -1,0 +1,94 @@
+# ============================================================================
+# Container 2: Gemma AI Service (GPU EXCLUSIVE)
+# Responsibilities: LLM inference with exclusive GPU access
+# Policy:
+#   - Use PRE-BUILT wheel from host (built with CUDA support)
+#   - NO compilation in Docker = NO libcuda.so.1 linking issues
+#   - Fast builds (< 2 minutes)
+#   - Ubuntu 24.04 base = GLIBC 2.39 (matches host's GLIBC 2.38)
+# ============================================================================
+
+FROM ubuntu:24.04
+
+LABEL maintainer="Nemo Server"
+LABEL description="Gemma AI Service with GPU acceleration (prebuilt wheel)"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Phoenix
+
+# Install Python 3.12 (default in Ubuntu 24.04) and CUDA runtime libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    curl \
+    wget \
+    ca-certificates \
+    gnupg \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install NVIDIA CUDA runtime (cudart, cublas, etc.)
+# Using cuda-toolkit-12-config to get minimal runtime dependencies
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && rm cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    cuda-cudart-12-6 \
+    cuda-nvrtc-12-6 \
+    libcublas-12-6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements (must NOT contain llama-cpp-python)
+COPY services/gemma-service/requirements.txt /app/requirements.txt
+
+# --- Install PRE-BUILT llama-cpp-python wheel ---
+# This wheel was built on the host with CUDA support
+# No compilation = No libcuda.so.1 linking issues!
+# Note: Use the Oct 28th wheel (0.3.16) which supports Gemma 3
+COPY docker/wheels/llama_cpp_python-*.whl /tmp/
+
+# Ubuntu 24.04 requires --break-system-packages (safe in containers)
+RUN pip3 install --break-system-packages --no-cache-dir /tmp/llama_cpp_python-*.whl && \
+    rm /tmp/llama_cpp_python-*.whl
+
+# Now install everything else
+RUN pip3 install --break-system-packages --no-cache-dir -r requirements.txt
+
+# Copy service code
+COPY services/gemma-service/src/main.py /app/main.py
+COPY shared /app/shared
+
+# Create runtime dirs
+RUN mkdir -p /app/logs /app/data /app/models
+
+# Non-root runtime user
+RUN useradd -m -s /bin/bash nemo && \
+    chown -R nemo:nemo /app
+USER nemo
+
+# Runtime config
+ENV GEMMA_MODEL_PATH=/app/models/gemma-3-4b-it-UD-Q4_K_XL.gguf
+ENV GEMMA_GPU_LAYERS=20
+ENV PYTHONPATH=/app:$PYTHONPATH
+
+# CUDA library paths (CUDA 12.6 will be installed, compatible with 12.5 binaries)
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+ENV PATH=/usr/local/cuda-12.6/bin:/usr/local/cuda/bin:${PATH}
+
+# GPU visibility hints (still need --gpus all at docker run)
+ENV CUDA_VISIBLE_DEVICES=0
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8001/health || exit 1
+
+CMD ["python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+
+

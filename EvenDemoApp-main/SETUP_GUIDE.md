@@ -1,22 +1,20 @@
-# EvenDemoApp Setup Guide
+# Even Demo App - Setup Guide
 
-Complete guide to configure the Flutter app to connect to your Nemo Server backend.
+Flutter client application for Nemo Server that provides voice interface for smart glasses.
 
 ---
 
-## 📋 Quick Setup (5 Minutes)
+## 📋 Quick Setup
 
-### Step 1: Create `.env` File
+### Step 1: Configure Server Connection
 
+Create `.env` file:
 ```bash
 cd EvenDemoApp-main
 cp .env.example .env
 ```
 
-### Step 2: Configure Your Server IP
-
-Open `.env` and replace `YOUR_SERVER_IP` with your actual server IP address:
-
+Edit `.env` and set your server IP:
 ```bash
 # Find your server IP address
 hostname -I | awk '{print $1}'

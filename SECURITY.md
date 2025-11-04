@@ -1,183 +1,273 @@
 # Security Policy
 
-## 🔒 Security Features
+## Supported Versions
 
-Nemo Server implements multiple layers of security:
+We release security updates for the following versions:
 
-### Authentication & Authorization
-- **Session-based authentication** with HTTP-only cookies
-- **Bcrypt password hashing** (industry standard, salted)
-- **Role-based access control** (Admin, User roles)
-- **100% speaker-based data isolation** at SQL level
-- **Job ownership tracking** for AI analysis tasks
+| Version | Supported          |
+| ------- | ------------------ |
+| 2.0.x   | :white_check_mark: |
+| < 2.0   | :x:                |
 
-### Rate Limiting
-- **100 requests per minute per IP address** (configurable)
-- Protects against brute force attacks
-- Prevents API abuse
+## Reporting a Vulnerability
 
-### Data Protection
-- **Speaker isolation**: Users can only access their own speaker's data
-- **Admin override**: Administrators can view all data for system management
-- **Session expiry**: Automatic logout after 24 hours (configurable)
+We take security vulnerabilities seriously. If you discover a security issue, please follow these steps:
 
-### Network Security
-- **IP whitelisting** for Flutter app transcription endpoint
-- **CORS configuration** for web security
-- **Security headers** (X-Frame-Options, Content-Security-Policy)
+### 1. **DO NOT** Create a Public Issue
 
----
+Please do not report security vulnerabilities through public GitHub issues, discussions, or pull requests.
 
-## ⚠️ Known Limitations
+### 2. Report Privately
 
-### HTTP Only (No TLS/SSL)
-**Current State**: The default configuration uses unencrypted HTTP.
+Send details to: **[INSERT YOUR SECURITY EMAIL]**
 
-**Risk**: Traffic between client and server is not encrypted, making it vulnerable to:
-- Man-in-the-middle attacks
-- Password interception
-- Session hijacking on public networks
+Include the following information:
+- Type of vulnerability
+- Full paths of source files related to the vulnerability
+- Location of affected source code (tag/branch/commit)
+- Step-by-step instructions to reproduce the issue
+- Proof-of-concept or exploit code (if possible)
+- Impact of the vulnerability
+- Any potential mitigations you've identified
 
-**Mitigation**: 
-- Only use on trusted local networks
-- Configure HTTPS with reverse proxy (Nginx/Caddy) for production
-- Use Let's Encrypt for free SSL certificates
-
-### Default Passwords
-**Risk**: The system ships with default credentials:
-- `admin` / `admin123`
-- `user1` / `user1pass`
-- `television` / `tvpass123`
-
-**Mitigation**: **CHANGE ALL DEFAULT PASSWORDS IMMEDIATELY** in `src/auth/auth_manager.py`
-
-### Database Encryption
-**Current State**: SQLite database is stored in plaintext.
-
-**Risk**: Anyone with file system access can read the database.
-
-**Mitigation**:
-- Restrict file permissions on `instance/` directory
-- Consider encrypted file system for sensitive deployments
-- Implement database-level encryption if needed
-
-### Local Network Only
-**Current State**: Designed for local network deployment.
-
-**Risk**: Not hardened for internet exposure.
-
-**Mitigation**: 
-- **DO NOT expose port 8000 directly to the internet**
-- Use VPN for remote access
-- Implement additional firewall rules
-- Consider adding API key authentication for production
-
----
-
-## 🚨 Reporting a Vulnerability
-
-We take security seriously. If you discover a security vulnerability, please report it responsibly.
-
-### How to Report
-
-**DO NOT** open a public GitHub issue for security vulnerabilities.
-
-Instead, please email: **[Your Email Here]** with:
-1. Description of the vulnerability
-2. Steps to reproduce
-3. Potential impact
-4. Suggested fix (if you have one)
-
-### Response Timeline
+### 3. Response Timeline
 
 - **Initial Response**: Within 48 hours
-- **Status Update**: Within 7 days
-- **Fix Timeline**: Depends on severity
-  - Critical: 1-3 days
-  - High: 1-2 weeks
-  - Medium: 2-4 weeks
-  - Low: Next release cycle
+- **Detailed Response**: Within 7 days
+- **Fix Timeline**: Depends on severity (see below)
 
-### Disclosure Policy
+### 4. Severity Levels
 
-- We follow **responsible disclosure** practices
-- We will acknowledge your contribution in release notes (unless you prefer anonymity)
-- We will notify you when the fix is released
-- Please allow us to fix the issue before public disclosure
+| Severity | Response Time | Fix Timeline |
+|----------|--------------|--------------|
+| **Critical** | 24 hours | 7 days |
+| **High** | 48 hours | 14 days |
+| **Medium** | 7 days | 30 days |
+| **Low** | 14 days | 60 days |
 
 ---
 
-## 🛡️ Security Best Practices for Deployment
+## Security Measures
 
-### For Development/Testing
-✅ Use default configuration  
-✅ Local network only  
-✅ Default passwords acceptable  
+### Current Protections
 
-### For Production
-❌ Change ALL default passwords  
-❌ Set `SECRET_KEY` and `DB_ENCRYPTION_KEY` environment variables  
-❌ Configure HTTPS (Let's Encrypt + Nginx)  
-❌ Restrict `FLUTTER_WHITELIST` to specific IPs  
-❌ Enable firewall rules  
-❌ Regular security updates  
-❌ Monitor access logs  
-❌ Implement backup strategy  
+Nemo Server implements multiple security layers:
 
-### Recommended Production Setup
+#### 1. **Authentication & Authorization**
+- ✅ JWT-based service-to-service authentication
+- ✅ Session-based user authentication with encrypted cookies
+- ✅ Role-based access control (RBAC)
+- ✅ Password hashing with bcrypt
+- ✅ Session expiration and rotation
 
+#### 2. **Data Protection**
+- ✅ Encrypted databases (SQLCipher)
+- ✅ Docker secrets for credential management
+- ✅ No secrets in environment variables or code
+- ✅ TLS/SSL support for production deployments
+- ✅ Encrypted data at rest
+
+#### 3. **Network Security**
+- ✅ CORS configuration
+- ✅ Internal Docker network isolation
+- ✅ Rate limiting on authentication endpoints
+- ✅ Request validation with Pydantic models
+
+#### 4. **Service Security**
+- ✅ Replay attack protection with request IDs
+- ✅ Service-to-service JWT verification
+- ✅ Docker secrets for sensitive data
+- ✅ Minimal container privileges
+
+#### 5. **Input Validation**
+- ✅ File upload size limits
+- ✅ Audio format validation
+- ✅ SQL injection prevention (parameterized queries)
+- ✅ XSS protection in frontend
+
+---
+
+## Known Security Considerations
+
+### 1. **GPU Access**
+- GPU containers require `--gpus all` which grants device access
+- Mitigation: Run in isolated environment, use resource quotas
+
+### 2. **Docker Socket**
+- Services do not mount Docker socket
+- All coordination via Redis/PostgreSQL
+
+### 3. **Model Files**
+- Large ML models are gitignored but must be secured on host
+- Recommendation: Verify model checksums before deployment
+
+### 4. **Secrets Management**
+- Secrets stored in `docker/secrets/` directory
+- **Critical**: Ensure proper file permissions (600) and never commit to git
+- Use environment-specific secrets for dev/staging/prod
+
+---
+
+## Security Best Practices for Deployment
+
+### Development
 ```bash
-# 1. Set strong secrets
-export SECRET_KEY="$(openssl rand -hex 32)"
-export DB_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+# Generate strong secrets
+openssl rand -base64 32 > docker/secrets/session_key
 
-# 2. Configure whitelist
-export FLUTTER_WHITELIST="192.168.1.100,192.168.1.101"
+# Set proper permissions
+chmod 600 docker/secrets/*
 
-# 3. Use HTTPS reverse proxy
-# (See docs/HTTPS_SETUP.md for Nginx configuration)
+# Never commit secrets
+git status  # Verify .gitignore works
+```
 
-# 4. Restrict Docker container
-# Run as non-root user
-# Limit resource usage
+### Production
+
+1. **Use HTTPS/TLS**
+   ```yaml
+   # Enable secure cookies
+   SESSION_COOKIE_SECURE=true
+   SESSION_COOKIE_SAMESITE=strict
+   ```
+
+2. **Firewall Configuration**
+   ```bash
+   # Only expose API Gateway
+   ufw allow 443/tcp  # HTTPS
+   ufw deny 8001:8005/tcp  # Block internal services
+   ```
+
+3. **Environment Isolation**
+   ```bash
+   # Use separate Docker networks
+   docker network create nemo_internal
+   docker network create nemo_public
+   ```
+
+4. **Regular Updates**
+   ```bash
+   # Update base images
+   docker compose pull
+   docker compose up -d
+   
+   # Update dependencies
+   pip install --upgrade -r requirements.txt
+   ```
+
+5. **Monitoring & Logging**
+   - Enable audit logging
+   - Monitor failed authentication attempts
+   - Set up alerts for suspicious activity
+   - Rotate logs regularly
+
+6. **Backup Encryption**
+   ```bash
+   # Backup encrypted databases and vector store (host paths)
+   tar -czf backup.tar.gz docker/gateway_instance/ docker/rag_instance/ docker/faiss_index/
+   gpg -c backup.tar.gz
+   ```
+
+---
+
+## Security Checklist
+
+Before deploying to production:
+
+- [ ] All secrets are randomly generated (32+ bytes)
+- [ ] Secret files have 600 permissions
+- [ ] `.gitignore` prevents secret commits
+- [ ] HTTPS/TLS configured
+- [ ] Firewall rules restrict internal services
+- [ ] Docker secrets used (not environment variables)
+- [ ] Rate limiting enabled
+- [ ] Session timeout configured appropriately
+- [ ] CORS origins restricted to known domains
+- [ ] Audit logging enabled
+- [ ] Regular security updates scheduled
+- [ ] Backup strategy implemented
+- [ ] Monitoring and alerting configured
+
+---
+
+## Vulnerability Disclosure Policy
+
+We follow **Coordinated Disclosure**:
+
+1. Security researcher reports vulnerability privately
+2. We confirm and investigate the issue
+3. We develop and test a fix
+4. We release the fix
+5. We publicly disclose the vulnerability (with credit to researcher)
+6. Researcher may publish detailed findings after fix is deployed
+
+### Recognition
+
+We appreciate responsible disclosure and will:
+- Publicly acknowledge researchers (unless they prefer anonymity)
+- Provide updates throughout the process
+- Consider adding researchers to our Hall of Fame
+
+---
+
+## Security Updates
+
+Security patches are released as:
+- **Critical/High**: Immediate patch release (e.g., v2.0.1)
+- **Medium/Low**: Included in next minor version (e.g., v2.1.0)
+
+Subscribe to releases on GitHub to receive notifications.
+
+---
+
+## Compliance
+
+This project aims to follow:
+- **OWASP Top 10** - Web application security risks
+- **CWE Top 25** - Most dangerous software weaknesses
+- **Docker Security Best Practices**
+- **NIST Cybersecurity Framework** principles
+
+---
+
+## Security Audit
+
+Last security audit: **November 2025**
+
+Next scheduled audit: **Q2 2026**
+
+Audit areas:
+- Authentication & Authorization
+- Data encryption
+- Container security
+- Dependency vulnerabilities
+- Code injection prevention
+- Network isolation
+
+---
+
+## Third-Party Dependencies
+
+We monitor dependencies for known vulnerabilities using:
+- GitHub Dependabot
+- Safety checks in CI/CD
+- Regular dependency updates
+
+To check your installation:
+```bash
+pip install safety
+safety check -r services/*/requirements.txt
 ```
 
 ---
 
-## 📚 Security Resources
+## Questions?
 
-- [OWASP Top 10](https://owasp.org/www-project-top-ten/)
-- [FastAPI Security](https://fastapi.tiangolo.com/tutorial/security/)
-- [Docker Security Best Practices](https://docs.docker.com/develop/security-best-practices/)
-- [Let's Encrypt](https://letsencrypt.org/)
-
----
-
-## 🔄 Security Updates
-
-We regularly review and update security measures. Check the [CHANGELOG](CHANGELOG.md) for security-related updates.
-
-**Latest Security Review**: October 2025
+For security questions (non-vulnerabilities):
+- Open a [discussion](https://github.com/pruittcolon/NeMo_Server/discussions)
+- Check documentation
+- Email: [INSERT CONTACT EMAIL]
 
 ---
 
-## 📝 Security Audit Checklist
-
-Before deploying to production:
-
-- [ ] All default passwords changed
-- [ ] `SECRET_KEY` set to random value
-- [ ] `DB_ENCRYPTION_KEY` set to random value
-- [ ] HTTPS configured and working
-- [ ] `FLUTTER_WHITELIST` limited to specific IPs
-- [ ] Firewall rules configured
-- [ ] Security headers verified
-- [ ] Rate limiting tested
-- [ ] Speaker isolation verified (run `tests/test_security_comprehensive.sh`)
-- [ ] Backup strategy implemented
-- [ ] Monitoring and logging configured
-
----
-
-**Remember**: Security is a continuous process, not a one-time setup. Regularly review and update your security measures.
-
+**Thank you for helping keep Nemo Server secure!** 🔒

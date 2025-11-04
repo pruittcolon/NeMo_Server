@@ -1,0 +1,19 @@
+# GPU Coordinator Service Dependencies
+# FastAPI & Server
+fastapi==0.110.3
+uvicorn[standard]==0.30.6
+pydantic==2.10.6
+python-dotenv==1.0.1
+
+# Redis for GPU lock coordination
+redis==5.0.1
+
+# PostgreSQL for task persistence
+asyncpg==0.29.0
+
+
+
+
+
+
+

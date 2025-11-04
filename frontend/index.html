@@ -191,14 +191,20 @@
     // Load latest transcription
     async function loadLatestTranscription() {
       try {
-        const result = await api.getLatest();
+        // Load recent transcripts to get accurate stats
+        const transResult = await api.getRecentTranscripts(10);
+        const transcripts = transResult.transcripts || [];
         
-        if (result && result.answer) {
-          updateTranscriptionFeed([result]);
+        if (transcripts.length > 0) {
+          // Show the latest one in the feed
+          updateTranscriptionFeed(transcripts.slice(0, 1));
         } else {
           document.getElementById('transcription-feed').innerHTML = '';
           document.getElementById('empty-state').classList.remove('hidden');
         }
+        
+        // Update stats with all transcripts count
+        await updateDashboardStats();
       } catch (error) {
         console.error('Failed to load transcription:', error);
         showToast('Error', 'Failed to load latest transcription', 'error');
@@ -206,11 +212,11 @@
     }
 
     // Update transcription feed
-    function updateTranscriptionFeed(transcriptions) {
+    function updateTranscriptionFeed(transcripts) {
       const feedEl = document.getElementById('transcription-feed');
       const emptyState = document.getElementById('empty-state');
       
-      if (!transcriptions || transcriptions.length === 0) {
+      if (!transcripts || transcripts.length === 0) {
         emptyState.classList.remove('hidden');
         feedEl.innerHTML = '';
         return;
@@ -222,13 +228,13 @@
       feedEl.innerHTML = '';
       
       // Add transcription items
-      transcriptions.forEach((item, index) => {
-        const segments = item.payload?.segments || [];
+      transcripts.forEach((transcript, index) => {
+        const segments = transcript.segments || [];
         
-        segments.forEach(segment => {
+        segments.forEach((segment, segIndex) => {
           const itemEl = document.createElement('div');
           itemEl.className = 'transcription-item fade-in-up';
-          itemEl.style.animationDelay = `${index * 100}ms`;
+          itemEl.style.animationDelay = `${segIndex * 100}ms`;
           
           // Speaker avatar
           const avatar = createSpeakerAvatar(segment.speaker || 'UNKNOWN');
@@ -238,6 +244,12 @@
             ? createEmotionBadge(segment.emotion, segment.emotion_confidence)
             : null;
           
+          const startTime = segment.start_time !== null ? formatDuration(segment.start_time) : '0:00';
+          const endTime = segment.end_time !== null ? formatDuration(segment.end_time) : '0:00';
+          const duration = segment.end_time !== null && segment.start_time !== null 
+            ? formatDuration(segment.end_time - segment.start_time) 
+            : '0:00';
+          
           itemEl.innerHTML = `
             <div class="transcription-header">
               <div class="transcription-speaker">
@@ -245,7 +257,7 @@
                 <span>${escapeHTML(segment.speaker || 'Unknown Speaker')}</span>
               </div>
               <span class="transcription-time">
-                ${formatDuration(segment.start)} - ${formatDuration(segment.end)}
+                ${startTime} - ${endTime}
               </span>
             </div>
             <div class="transcription-text">
@@ -254,7 +266,7 @@
             <div class="transcription-footer">
               ${emotionBadge ? emotionBadge.outerHTML : ''}
               <span class="text-muted" style="font-size: 0.75rem;">
-                Duration: ${formatDuration(segment.end - segment.start)}
+                Duration: ${duration}
               </span>
             </div>
           `;
@@ -262,26 +274,31 @@
           feedEl.appendChild(itemEl);
         });
       });
-      
-      // Update stats
-      updateStats(transcriptions);
     }
 
-    // Update statistics
-    function updateStats(transcriptions) {
-      // Total transcriptions
-      document.getElementById('total-transcriptions').textContent = transcriptions.length;
-      
-      // Count unique speakers
-      const speakers = new Set();
-      transcriptions.forEach(t => {
-        const segments = t.payload?.segments || [];
-        segments.forEach(s => speakers.add(s.speaker));
-      });
-      document.getElementById('active-speakers').textContent = speakers.size;
-      
-      // Update recent speakers
-      updateRecentSpeakers(Array.from(speakers));
+    // Update dashboard statistics with actual totals
+    async function updateDashboardStats() {
+      try {
+        // Get all transcripts to count properly
+        const transResult = await api.getRecentTranscripts(5000);
+        const transcripts = transResult.transcripts || [];
+        
+        // Total transcriptions
+        document.getElementById('total-transcriptions').textContent = transcripts.length;
+        
+        // Count unique speakers across all transcripts
+        const speakers = new Set();
+        transcripts.forEach(t => {
+          const tSpeakers = t.speakers || [];
+          tSpeakers.forEach(s => speakers.add(s));
+        });
+        document.getElementById('active-speakers').textContent = speakers.size;
+        
+        // Update recent speakers
+        updateRecentSpeakers(Array.from(speakers));
+      } catch (error) {
+        console.error('Failed to update stats:', error);
+      }
     }
 
     // Update recent speakers
@@ -312,7 +329,7 @@
         
         if (!data.valid) {
           console.warn('[AUTH] Not authenticated, redirecting to login');
-          window.location.href = '/ui/login.html';
+          window.location.href = 'login.html';
           return false;
         }
         
@@ -332,7 +349,7 @@
           logoutBtn.style.display = 'flex';
           logoutBtn.onclick = async () => {
             await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-            window.location.href = '/ui/login.html';
+            window.location.href = 'login.html';
           };
         }
         
@@ -346,7 +363,7 @@
         return true;
       } catch (error) {
         console.error('[AUTH] Check failed:', error);
-        window.location.href = '/ui/login.html';
+        window.location.href = 'login.html';
         return false;
       }
     }
@@ -358,10 +375,7 @@
       if (!authenticated) return;
       
       // Load initial data
-      await Promise.all([
-        loadHealthStatus(),
-        loadLatestTranscription()
-      ]);
+      await loadLatestTranscription();
       
       // Start auto-refresh
       startAutoRefresh(loadLatestTranscription, 2000);
@@ -382,5 +396,4 @@
 
 </body>
 </html>
-
 

@@ -5,7 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:demo_ai_even/services/auth_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// Service to handle transcription using the local WhisperServer (main3.py)
 class WhisperServerService {
@@ -14,6 +14,9 @@ class WhisperServerService {
   final Dio _dio = Dio();
   final int _chunkSecs =
       int.tryParse(dotenv.env['WHISPER_CHUNK_SECS'] ?? '') ?? 30;
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+  AndroidOptions _androidOptions() => const AndroidOptions(encryptedSharedPreferences: true);
+  IOSOptions _iosOptions() => const IOSOptions(accessibility: KeychainAccessibility.first_unlock);
 
   StreamController<List<int>>? _audioStreamController;
   Completer<String>? _transcriptCompleter;
@@ -136,11 +139,21 @@ class WhisperServerService {
   /// Sends audio file to WhisperServer for transcription
   Future<void> _sendToWhisperServer(File audioFile) async {
     try {
-      // Get authentication token from storage
+      // Get authentication token and CSRF token from storage
       String? sessionToken;
+      String? csrfToken;
       try {
-        final prefs = await SharedPreferences.getInstance();
-        sessionToken = prefs.getString('session_token');
+        sessionToken = await _secureStorage.read(
+          key: 'session_token',
+          aOptions: _androidOptions(),
+          iOptions: _iosOptions(),
+        );
+        csrfToken = await _secureStorage.read(
+          key: 'csrf_token',
+          aOptions: _androidOptions(),
+          iOptions: _iosOptions(),
+        );
+        sessionToken ??= AuthService.instance.sessionToken;
       } catch (e) {
         print("WhisperServerService: Could not load session token: $e");
       }
@@ -151,11 +164,18 @@ class WhisperServerService {
         'job_id': DateTime.now().millisecondsSinceEpoch.toString(),
       });
 
-      // Build headers with optional authentication
+      // Build headers with optional authentication and CSRF
       final headers = <String, dynamic>{};
       if (sessionToken != null && sessionToken.isNotEmpty) {
         headers['Cookie'] = 'ws_session=$sessionToken';
         print("WhisperServerService: Using authenticated session");
+        // Add CSRF token header for POST requests
+        if (csrfToken != null && csrfToken.isNotEmpty) {
+          headers['X-CSRF-Token'] = csrfToken;
+          print("WhisperServerService: Added CSRF token");
+        } else {
+          print("WhisperServerService: WARNING - No CSRF token found");
+        }
       } else {
         print("WhisperServerService: No session token found, making unauthenticated request");
       }
@@ -256,8 +276,12 @@ class WhisperServerService {
       // Get authentication token from storage
       String? sessionToken;
       try {
-        final prefs = await SharedPreferences.getInstance();
-        sessionToken = prefs.getString('session_token');
+        sessionToken = await _secureStorage.read(
+          key: 'session_token',
+          aOptions: _androidOptions(),
+          iOptions: _iosOptions(),
+        );
+        sessionToken ??= AuthService.instance.sessionToken;
       } catch (e) {
         print("WhisperServerService: Could not load session token for health check: $e");
       }

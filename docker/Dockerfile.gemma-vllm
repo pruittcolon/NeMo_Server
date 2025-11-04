@@ -1,0 +1,65 @@
+# ============================================================================
+# Gemma 3 4B with vLLM - High Performance Inference
+# Port: 8011 (to avoid conflict with llama-cpp on 8001)
+# Expected: 2-3x faster generation than llama-cpp-python
+# ============================================================================
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+LABEL maintainer="Nemo Server"
+LABEL description="Gemma 3 4B with vLLM for high-performance inference"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Phoenix
+
+# Install Python 3.10 and dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install vLLM and dependencies
+# Note: vLLM requires specific versions
+RUN pip3 install --no-cache-dir \
+    vllm==0.6.3 \
+    fastapi==0.110.3 \
+    uvicorn[standard]==0.30.6 \
+    pydantic==2.10.6 \
+    python-dotenv==1.0.1 \
+    transformers==4.46.0 \
+    torch==2.1.2
+
+# Copy service code
+COPY services/gemma-vllm-service/src/main.py /app/main.py
+
+# Create model cache directory
+RUN mkdir -p /app/models
+
+# Environment variables
+ENV MODEL_NAME="casperhansen/gemma-2-9b-it-awq"
+ENV TENSOR_PARALLEL_SIZE=1
+ENV GPU_MEMORY_UTILIZATION=0.85
+ENV MAX_MODEL_LEN=16384
+ENV QUANTIZATION="awq"
+
+# Expose port 8011 (different from llama-cpp's 8001)
+EXPOSE 8011
+
+# Non-root user
+RUN useradd -m -s /bin/bash vllm && \
+    chown -R vllm:vllm /app
+USER vllm
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+  CMD curl -f http://localhost:8011/health || exit 1
+
+CMD ["python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8011"]
+
+
+
+

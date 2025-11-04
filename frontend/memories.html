@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nemo Server - Memories</title>
+  <title>Nemo Server - Transcriptions</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -56,8 +56,8 @@
   <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
     
     <section class="fade-in-up" style="text-align: center; margin-bottom: 3rem;">
-      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Memory Database</h1>
-      <p class="text-muted">Semantic search powered by FAISS vector database</p>
+      <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Transcriptions</h1>
+      <p class="text-muted">Real-time audio transcripts from your devices</p>
     </section>
 
     <!-- Actions -->
@@ -68,7 +68,7 @@
           <input 
             type="text" 
             class="search-input" 
-            placeholder="Search memories with semantic AI..."
+            placeholder="Search transcriptions..."
             id="memory-search"
             value=""
           >
@@ -83,9 +83,9 @@
     <!-- Stats -->
     <section class="grid grid-3 fade-in-up delay-200" style="margin-bottom: 3rem;">
       <div class="stat-card">
-        <i data-lucide="database" style="width: 28px; height: 28px; color: var(--primary); margin-bottom: 0.5rem;"></i>
+        <i data-lucide="mic" style="width: 28px; height: 28px; color: var(--primary); margin-bottom: 0.5rem;"></i>
         <div class="stat-value" id="total-memories">0</div>
-        <div class="stat-label">Total Memories</div>
+        <div class="stat-label">Total Transcriptions</div>
       </div>
       
       <div class="stat-card">
@@ -137,6 +137,13 @@
     let allMemories = [];
     let currentQuery = '';
 
+    // Truncate text to specified length
+    function truncateText(text, maxLength) {
+      if (!text) return '';
+      if (text.length <= maxLength) return text;
+      return text.substring(0, maxLength) + '...';
+    }
+
     // Load memories
     async function loadMemories() {
       const loading = document.getElementById('loading');
@@ -148,33 +155,49 @@
       emptyState.classList.add('hidden');
       
       try {
-        console.log('[MEMORIES] Loading memories, currentQuery:', currentQuery);
-        const result = currentQuery 
-          ? await api.searchMemories(currentQuery, 50)
-          : await api.getAllMemories(100);
+        console.log('[TRANSCRIPTS] Loading transcripts...');
         
-        console.log('[MEMORIES] API result:', result);
-        console.log('[MEMORIES] Result type:', typeof result, 'Is array:', Array.isArray(result));
+        // Use the api object to get transcripts - request up to 2000
+        const transResult = await api.getRecentTranscripts(2000);
         
-        // Result is directly an array of memories (not wrapped in object)
-        allMemories = Array.isArray(result) ? result : (result.results || result.memories || []);
+        console.log('[TRANSCRIPTS] Result:', transResult);
         
-        console.log('[MEMORIES] allMemories length:', allMemories.length);
+        // Convert transcripts to display format
+        const transcripts = (transResult.transcripts || [])
+          .filter(t => t.full_text && t.full_text.trim()) // Only show non-empty transcripts
+          .map(t => ({
+            memory_id: t.job_id,
+            title: `Session ${t.session_id ? t.session_id.substring(7, 20) : 'Unknown'}`,
+            body: t.full_text,
+            created_at: t.created_at,
+            session_id: t.session_id,
+            audio_duration: t.audio_duration,
+            speakers: t.speakers || [],
+            dominant_emotion: t.dominant_emotion,
+            segment_count: t.segment_count || 0,
+            segments: t.segments || []
+          }));
+        
+        allMemories = transcripts.sort((a, b) => 
+          new Date(b.created_at) - new Date(a.created_at)
+        );
+        
+        console.log('[TRANSCRIPTS] Total transcripts:', allMemories.length);
         
         loading.classList.add('hidden');
         
         if (allMemories.length === 0) {
-          console.log('[MEMORIES] No memories, showing empty state');
+          console.log('[TRANSCRIPTS] No transcripts, showing empty state');
           emptyState.classList.remove('hidden');
         } else {
-          console.log('[MEMORIES] Displaying', allMemories.length, 'memories');
+          console.log('[TRANSCRIPTS] Displaying', allMemories.length, 'transcripts');
           displayMemories(allMemories);
           updateStats();
         }
       } catch (error) {
-        console.error('[MEMORIES] Failed to load memories:', error);
+        console.error('[TRANSCRIPTS] Failed to load transcripts:', error);
         loading.classList.add('hidden');
-        showToast('Error', 'Failed to load memories', 'error');
+        showToast('Error', 'Failed to load transcripts', 'error');
       }
     }
 
@@ -189,28 +212,68 @@
         memoryEl.style.animationDelay = `${index * 50}ms`;
         memoryEl.style.marginBottom = '1rem';
         
-        const similarity = memory.score || memory.similarity || null;
+        const timestamp = memory.created_at ? new Date(memory.created_at).toLocaleString() : 'Unknown time';
+        const duration = memory.audio_duration ? `${Math.round(memory.audio_duration)}s` : '';
+        const sessionId = memory.session_id || 'Unknown';
+        
+        // Emotion colors
+        const emotionColors = {
+          'joy': '#10b981',
+          'sadness': '#3b82f6',
+          'anger': '#ef4444',
+          'fear': '#8b5cf6',
+          'surprise': '#f59e0b',
+          'disgust': '#84cc16',
+          'neutral': '#6b7280'
+        };
+        
+        const emotionColor = memory.dominant_emotion ? (emotionColors[memory.dominant_emotion] || '#6b7280') : '#6b7280';
+        const emotionBadge = memory.dominant_emotion ? `
+          <span class="badge" style="font-size: 0.75rem; background: ${emotionColor}20; color: ${emotionColor}; border: 1px solid ${emotionColor}40;">
+            <i data-lucide="smile" style="width: 12px; height: 12px;"></i>
+            ${memory.dominant_emotion}
+          </span>` : '';
+        
+        const speakerBadges = (memory.speakers || []).map(speaker => `
+          <span class="badge badge-info" style="font-size: 0.75rem;">
+            <i data-lucide="user" style="width: 12px; height: 12px;"></i>
+            ${speaker}
+          </span>
+        `).join('');
         
         memoryEl.innerHTML = `
           <div class="card-header">
-            <h4 style="margin: 0;">${escapeHTML(memory.title || 'Untitled')}</h4>
-            ${similarity ? `<span class="badge badge-primary">${Math.round(similarity * 100)}% match</span>` : ''}
+            <div>
+              <h4 style="margin: 0; margin-bottom: 0.25rem;">${escapeHTML(memory.title || 'Transcript')}</h4>
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <span class="badge badge-secondary" style="font-size: 0.75rem;">
+                  <i data-lucide="clock" style="width: 12px; height: 12px;"></i>
+                  ${timestamp}
+                </span>
+                ${duration ? `<span class="badge badge-secondary" style="font-size: 0.75rem;">
+                  <i data-lucide="timer" style="width: 12px; height: 12px;"></i>
+                  ${duration}
+                </span>` : ''}
+                <span class="badge badge-secondary" style="font-size: 0.75rem;">
+                  <i data-lucide="smartphone" style="width: 12px; height: 12px;"></i>
+                  ${sessionId.substring(0, 15)}...
+                </span>
+                ${emotionBadge}
+                ${speakerBadges}
+              </div>
+            </div>
           </div>
           <div class="card-body">
-            ${highlightText(memory.content, currentQuery)}
+            <p style="margin: 0; line-height: 1.6;">${highlightText(truncateText(memory.body || memory.content || '', 300), currentQuery)}</p>
           </div>
           <div class="card-footer">
             <span class="text-muted" style="font-size: 0.875rem;">
-              ${formatTime(memory.timestamp || memory.created_at)}
+              ID: ${memory.memory_id || 'Unknown'}
             </span>
             <div style="display: flex; gap: 0.5rem;">
-              <button class="btn btn-ghost" onclick="editMemory('${memory.id}')">
-                <i data-lucide="edit-2" style="width: 14px; height: 14px;"></i>
-                Edit
-              </button>
-              <button class="btn btn-ghost" onclick="deleteMemory('${memory.id}')" style="color: var(--danger);">
-                <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
-                Delete
+              <button class="btn btn-ghost" onclick="viewTranscriptDetails('${memory.memory_id || memory.id}')">
+                <i data-lucide="eye" style="width: 14px; height: 14px;"></i>
+                View Details
               </button>
             </div>
           </div>
@@ -224,12 +287,8 @@
 
     // Update stats
     async function updateStats() {
-      try {
-        const stats = await api.get('/memory/stats');
-        document.getElementById('total-memories').textContent = stats.total_memories || allMemories.length;
-      } catch (error) {
-        document.getElementById('total-memories').textContent = allMemories.length;
-      }
+      // Always show count of displayed transcripts
+      document.getElementById('total-memories').textContent = allMemories.length;
     }
 
     // Create memory modal
@@ -269,7 +328,7 @@
 
     // Edit memory
     async function editMemory(id) {
-      const memory = allMemories.find(m => m.id === id);
+      const memory = allMemories.find(m => (m.memory_id === id || m.id === id));
       if (!memory) return;
       
       showModal('Edit Memory', `
@@ -281,7 +340,7 @@
           </div>
           <div style="margin-bottom: 1.5rem;">
             <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">Content</label>
-            <textarea class="input" id="edit-memory-content" rows="6" required>${escapeHTML(memory.content)}</textarea>
+            <textarea class="input" id="edit-memory-content" rows="6" required>${escapeHTML(memory.body || memory.content || '')}</textarea>
           </div>
           <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
             <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -332,6 +391,107 @@
       window.location.href = 'analysis.html';
     }
 
+    // View transcript details
+    async function viewTranscriptDetails(jobId) {
+      const memory = allMemories.find(m => m.memory_id === jobId);
+      if (!memory) {
+        showToast('Error', 'Transcript not found', 'error');
+        return;
+      }
+      
+      // Emotion colors
+      const emotionColors = {
+        'joy': '#10b981',
+        'sadness': '#3b82f6',
+        'anger': '#ef4444',
+        'fear': '#8b5cf6',
+        'surprise': '#f59e0b',
+        'disgust': '#84cc16',
+        'neutral': '#6b7280'
+      };
+      
+      // Build segments HTML
+      let segmentsHtml = '';
+      if (memory.segments && memory.segments.length > 0) {
+        segmentsHtml = memory.segments.map(seg => {
+          const emotionColor = seg.emotion ? (emotionColors[seg.emotion] || '#6b7280') : '#6b7280';
+          const confidence = seg.emotion_confidence ? `${Math.round(seg.emotion_confidence * 100)}%` : '';
+          const timeRange = seg.start_time !== null && seg.end_time !== null 
+            ? `${seg.start_time.toFixed(1)}s - ${seg.end_time.toFixed(1)}s` 
+            : '';
+          
+          return `
+            <div style="padding: 1rem; background: var(--glass-bg); border-radius: 8px; margin-bottom: 0.75rem; border-left: 3px solid ${emotionColor};">
+              <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
+                <span class="badge badge-info" style="font-size: 0.75rem;">
+                  <i data-lucide="user" style="width: 12px; height: 12px;"></i>
+                  ${seg.speaker || 'Unknown'}
+                </span>
+                ${seg.emotion ? `
+                  <span class="badge" style="font-size: 0.75rem; background: ${emotionColor}20; color: ${emotionColor}; border: 1px solid ${emotionColor}40;">
+                    <i data-lucide="smile" style="width: 12px; height: 12px;"></i>
+                    ${seg.emotion} ${confidence}
+                  </span>
+                ` : ''}
+                ${timeRange ? `
+                  <span class="badge badge-secondary" style="font-size: 0.7rem;">
+                    <i data-lucide="clock" style="width: 10px; height: 10px;"></i>
+                    ${timeRange}
+                  </span>
+                ` : ''}
+              </div>
+              <p style="margin: 0; line-height: 1.6;">${escapeHTML(seg.text)}</p>
+            </div>
+          `;
+        }).join('');
+      } else {
+        segmentsHtml = '<p class="text-muted">No segment data available</p>';
+      }
+      
+      const timestamp = memory.created_at ? new Date(memory.created_at).toLocaleString() : 'Unknown';
+      const duration = memory.audio_duration ? `${Math.round(memory.audio_duration)}s` : 'Unknown';
+      
+      showModal(`Transcript Details - ${memory.title}`, `
+        <div style="margin-bottom: 1.5rem;">
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;">
+            <span class="badge badge-secondary">
+              <i data-lucide="clock" style="width: 12px; height: 12px;"></i>
+              ${timestamp}
+            </span>
+            <span class="badge badge-secondary">
+              <i data-lucide="timer" style="width: 12px; height: 12px;"></i>
+              ${duration}
+            </span>
+            <span class="badge badge-secondary">
+              <i data-lucide="layers" style="width: 12px; height: 12px;"></i>
+              ${memory.segment_count} segments
+            </span>
+          </div>
+          
+          <h4 style="margin-bottom: 0.5rem;">Speakers</h4>
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
+            ${(memory.speakers || []).map(speaker => `
+              <span class="badge badge-info">
+                <i data-lucide="user" style="width: 12px; height: 12px;"></i>
+                ${speaker}
+              </span>
+            `).join('') || '<span class="text-muted">No speaker data</span>'}
+          </div>
+          
+          <h4 style="margin-bottom: 1rem;">Transcript Segments</h4>
+          <div style="max-height: 400px; overflow-y: auto;">
+            ${segmentsHtml}
+          </div>
+        </div>
+        
+        <div style="display: flex; justify-content: flex-end; margin-top: 1.5rem;">
+          <button class="btn btn-primary" onclick="closeModal()">Close</button>
+        </div>
+      `);
+      
+      lucide.createIcons();
+    }
+
     // Initialize page with authentication
     async function initPage() {
       // Enforce authentication
@@ -340,8 +500,7 @@
       
       // Initial load
       currentQuery = ''; // Ensure no default query
-      loadMemories();
-      updateStats();
+      await loadMemories(); // Wait for memories to load before updating stats
     }
     
     // Call on DOM ready

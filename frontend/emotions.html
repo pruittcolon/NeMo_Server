@@ -19,9 +19,9 @@
   <!-- Chart.js for visualizations -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
   
-  <script src="assets/js/api.js"></script>
-  <script src="assets/js/app.js"></script>
-  <script src="assets/js/auth.js"></script>
+  <script src="assets/js/api.js?v=2024110501"></script>
+  <script src="assets/js/app.js?v=2024110501"></script>
+  <script src="assets/js/auth.js?v=2024110501"></script>
 </head>
 <body>
   
@@ -156,12 +156,14 @@
         
         // Call new API
         const stats = await api.getEmotionStats(startDate, endDate);
-        
-        if (stats && stats.emotions) {
-          updateStats(stats);
-          updateCharts(stats);
-          updateEmotionFeed(stats);
+
+        if (!stats || stats.success === false) {
+          throw new Error(stats?.error || 'Emotion stats request failed');
         }
+
+        updateStats(stats);
+        updateCharts(stats);
+        updateEmotionFeed(stats);
       } catch (error) {
         console.error('Failed to load emotion stats:', error);
         showToast('Error', 'Failed to load emotion statistics', 'error');
@@ -193,7 +195,16 @@
       feed.innerHTML = '';
       
       // Display top emotion segments
-      const topEmotions = stats.emotions.slice(0, 3);
+      const topEmotions = (stats.emotions || []).slice(0, 3);
+
+      if (topEmotions.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-muted';
+        empty.style.padding = '1rem';
+        empty.textContent = 'No emotional highlights detected for this period.';
+        feed.appendChild(empty);
+        return;
+      }
       
       for (const emotion of topEmotions) {
         const card = document.createElement('div');
@@ -338,4 +349,3 @@
 
 </body>
 </html>
-
