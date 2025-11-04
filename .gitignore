@@ -89,6 +89,7 @@ docker/gateway_instance/
 cache/
 uploads/
 enrollment/
+cookies.txt
 
 # ML Models & Weights (large files)
 # ============================================================================
