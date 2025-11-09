@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: https:;">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="DENY">
   <title>Nemo Server - Search</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -11,9 +14,13 @@
   
   <script src="https://unpkg.com/lucide@latest"></script>
   
+  <link rel="stylesheet" href="assets/css/design-tokens.css">
   <link rel="stylesheet" href="assets/css/main.css">
   <link rel="stylesheet" href="assets/css/components.css">
   <link rel="stylesheet" href="assets/css/animations.css">
+  <style>
+    .results-note{font-size:.9rem;color:var(--text-tertiary);margin-left:.5rem;font-weight:500}
+  </style>
   
   <script>
     window.__ASSET_VERSION__ = '2024110101';
@@ -22,7 +29,7 @@
   <script src="assets/js/app.js?v=2024110101"></script>
   <script src="assets/js/auth.js?v=2024110101"></script>
 </head>
-<body>
+<body class="gemma-theme">
   
   <!-- Header -->
   <header class="glass-header">
@@ -81,12 +88,23 @@
 
     <!-- Filters -->
     <section class="fade-in-up delay-200" style="margin-bottom: 2rem;">
-      <div style="text-align: center;">
+      <div style="display: flex; flex-direction: column; gap: 1rem; align-items: center;">
         <div id="filter-chips" style="display: inline-flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;">
           <span class="chip active" data-filter="all">All Results</span>
           <span class="chip" data-filter="today">Today</span>
           <span class="chip" data-filter="week">This Week</span>
           <span class="chip" data-filter="month">This Month</span>
+        </div>
+        <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; justify-content: center;">
+          <span class="text-muted" style="font-size: 0.85rem;">Sort by</span>
+          <div class="chip-select-wrapper">
+            <select id="sort-select" class="chip-select">
+              <option value="recent">Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="speaker-asc">Speaker A → Z</option>
+              <option value="speaker-desc">Speaker Z → A</option>
+            </select>
+          </div>
         </div>
       </div>
     </section>
@@ -123,6 +141,7 @@
     lucide.createIcons();
 
     const searchInput = document.getElementById('search-input');
+    const sortSelect = document.getElementById('sort-select');
     const resultsContainer = document.getElementById('results-container');
     const loadingState = document.getElementById('loading-state');
     const emptyState = document.getElementById('empty-state');
@@ -132,6 +151,40 @@
 
     let currentQuery = '';
     let currentFilter = 'all';
+    let currentSort = sortSelect ? sortSelect.value : 'recent';
+    let cachedResults = [];
+
+    const debounceFn = (typeof window !== 'undefined' && typeof window.debounce === 'function')
+      ? window.debounce
+      : (fn, wait = 300) => {
+          let timeout;
+          return (...args) => {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => fn.apply(null, args), wait);
+          };
+        };
+
+    const escapeHtmlSafe = (typeof window !== 'undefined' && typeof window.escapeHTML === 'function')
+      ? window.escapeHTML
+      : (str = '') => String(str ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+
+    const highlightSafe = (typeof window !== 'undefined' && typeof window.highlightText === 'function')
+      ? window.highlightText
+      : (text = '', query = '') => {
+          if (!query) return escapeHtmlSafe(text);
+          const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const pattern = new RegExp(`(${escaped})`, 'ig');
+          return escapeHtmlSafe(text).replace(pattern, '<mark>$1</mark>');
+        };
+
+    const showToastSafe = (typeof window !== 'undefined' && typeof window.showToast === 'function')
+      ? window.showToast
+      : (title, message) => console.warn(`[Toast] ${title}: ${message}`);
 
     function getDateRange(filter) {
       const today = new Date();
@@ -176,6 +229,17 @@
       return payload;
     }
 
+    function getEffectiveQuery(raw) {
+      const trimmed = (raw || '').trim();
+      if (!trimmed) return { effective: '', reason: 'empty' };
+      const tokens = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+      const hasMeaningful = tokens.some((token) => !STOPWORDS.has(token));
+      return {
+        effective: hasMeaningful ? trimmed : '',
+        reason: hasMeaningful ? null : 'stopword',
+      };
+    }
+
     function formatTimestamp(seconds) {
       if (seconds === null || seconds === undefined) return null;
       const value = Number(seconds);
@@ -194,57 +258,35 @@
     }
     window.viewTranscript = viewTranscript;
 
-    const performSearch = debounce(async () => {
-      const query = searchInput.value.trim();
-      currentQuery = query;
-
-      loadingState.classList.remove('hidden');
-      resultsContainer.innerHTML = '';
-      emptyState.classList.add('hidden');
-
-      try {
-        const payload = buildSearchPayload(query);
-        const unifiedResult = await api.searchUnified(payload);
-        const items = unifiedResult?.items || [];
-
-        loadingState.classList.add('hidden');
-
-        if (items.length === 0) {
-          console.debug('[SEARCH] No items after unified search', { query, payload });
-          emptyState.classList.remove('hidden');
-          resultsTitle.textContent = query ? `Search Results for "${query}"` : 'Recent Transcripts';
-          return;
-        }
-
-        if (unifiedResult?.fallback) {
-          resultsTitle.textContent = query
-            ? 'Showing recent transcripts (query was too short or returned no matches)'
-            : 'Recent Transcripts';
-        } else if (query) {
-          resultsTitle.textContent = `Search Results for "${query}"`;
-        } else {
-          resultsTitle.textContent = 'Recent Transcripts';
-        }
-
-        displayResults(items);
-      } catch (error) {
-        console.error('Search failed:', error);
-        loadingState.classList.add('hidden');
-        emptyState.classList.remove('hidden');
-        showToast('Error', 'Search failed', 'error');
+    function sortItems(items) {
+      const arr = Array.isArray(items) ? [...items] : [];
+      switch (currentSort) {
+        case 'speaker-asc':
+          return arr.sort((a, b) => (a.speaker || '').localeCompare(b.speaker || '', undefined, { sensitivity: 'base' }));
+        case 'speaker-desc':
+          return arr.sort((a, b) => (b.speaker || '').localeCompare(a.speaker || '', undefined, { sensitivity: 'base' }));
+        case 'oldest':
+          return arr.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+        case 'recent':
+        default:
+          return arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
       }
-    }, 500);
+    }
 
-    function displayResults(items) {
+    function renderResults(items) {
       resultsContainer.innerHTML = '';
 
       items.forEach((item, index) => {
         const type = item.type || 'result';
-        const speaker = item.speaker || (type === 'memory' ? 'Memory Note' : '');
+        const speaker = item.speaker || (type === 'memory' ? 'Memory Note' : 'Unknown speaker');
         const title = item.title || speaker || 'Result';
-        const snippet = item.snippet || item.text || '';
-        const score = item.score || 0;
+        const segments = Array.isArray(item.segments) ? item.segments : [];
+        const snippet = item.snippet || item.text || item.body || '';
+        const aggregated = item.full_text || (segments.length ? segments.map(seg => seg.text || '').join(' ') : '');
+        const content = aggregated || snippet;
+        const score = typeof item.score === 'number' ? item.score : null;
         const emotion = item.emotion || null;
+        const emotionConfidence = item.emotion_confidence;
         const timestampLabel = item.timestamp_label || formatTimestamp(item.start_time);
         const createdLabel = item.created_at ? new Date(item.created_at).toLocaleString() : null;
         const jobId = item.job_id || item.transcript_id;
@@ -256,7 +298,7 @@
         resultEl.style.marginBottom = '1rem';
 
         const avatar = createSpeakerAvatar(speaker || 'Result');
-        const emotionBadge = emotion ? createEmotionBadge(emotion) : null;
+        const emotionBadge = emotion ? createEmotionBadge(emotion, emotionConfidence) : null;
 
         const metaPieces = [];
         if (timestampLabel) metaPieces.push(`at ${timestampLabel}`);
@@ -267,14 +309,18 @@
           ? `<button class="btn btn-ghost btn-sm" onclick="viewTranscript('${jobId}', ${startSeconds ?? 'null'})">View</button>`
           : '';
 
+        const safeSnippet = content
+          ? highlightSafe(content, currentQuery)
+          : '<span class="text-muted">Transcript text not captured yet.</span>';
+
         resultEl.innerHTML = `
           <div class="card-header">
             <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1;">
               ${avatar.outerHTML}
               <div style="flex: 1;">
-                <div style="font-weight: 600;">${escapeHTML(title)}</div>
+                <div style="font-weight: 600;">${escapeHtmlSafe(title)}</div>
                 <div class="text-muted" style="font-size: 0.75rem;">
-                  ${escapeHTML(speaker || '')}${metaLine ? ` • ${escapeHTML(metaLine)}` : ''}
+                  ${escapeHtmlSafe(speaker || '')}${metaLine ? ` • ${escapeHtmlSafe(metaLine)}` : ''}
                 </div>
               </div>
             </div>
@@ -283,11 +329,11 @@
               ${score ? `<span class="badge" style="background: var(--accent-color); color: white;">${(score * 100).toFixed(0)}%</span>` : ''}
             </div>
           </div>
-          <div class="card-body">
-            ${highlightText(snippet, currentQuery)}
+          <div class="card-body" style="background: rgba(15,23,42,.55); border-radius: 0.85rem; padding: 1rem;">
+            ${safeSnippet}
           </div>
           <div class="card-footer">
-            <span class="text-muted" style="font-size: 0.8rem;">${escapeHTML(type)}</span>
+            <span class="text-muted" style="font-size: 0.8rem; text-transform: capitalize;">${escapeHtmlSafe(type.replace('_', ' '))}</span>
             <div style="display: flex; gap: 0.5rem;">
               ${viewButton}
             </div>
@@ -300,7 +346,73 @@
       lucide.createIcons();
     }
 
-    // Filter chips
+    function displayResults(items, { cache = true } = {}) {
+      if (cache) {
+        cachedResults = Array.isArray(items) ? [...items] : [];
+      }
+      const ordered = sortItems(cache ? cachedResults : items);
+      if (!ordered.length) {
+        emptyState.classList.remove('hidden');
+        resultsContainer.innerHTML = '';
+        return;
+      }
+      emptyState.classList.add('hidden');
+      renderResults(ordered);
+    }
+
+    const performSearch = debounceFn(async () => {
+      const query = searchInput.value.trim();
+      currentQuery = query;
+      const { effective, reason } = getEffectiveQuery(query);
+      const payload = buildSearchPayload(effective);
+      const forcingRecent = !effective;
+
+      loadingState.classList.remove('hidden');
+      resultsContainer.innerHTML = '';
+      emptyState.classList.add('hidden');
+
+      try {
+        const unifiedResult = await api.searchUnified(payload);
+        const items = unifiedResult?.items || [];
+
+        loadingState.classList.add('hidden');
+
+        if (!items.length) {
+          emptyState.classList.remove('hidden');
+          resultsTitle.textContent = query ? `Search Results for "${query}"` : 'Recent Transcripts';
+          return;
+        }
+
+        if (unifiedResult?.fallback || forcingRecent) {
+          if (query && reason === 'stopword') {
+            resultsTitle.innerHTML = `Recent Transcripts <span class="results-note">("${escapeHtmlSafe(query)}" is too common)</span>`;
+          } else if (query) {
+            resultsTitle.innerHTML = `Recent Transcripts <span class="results-note">(showing freshest matches)</span>`;
+          } else {
+            resultsTitle.textContent = 'Recent Transcripts';
+          }
+        } else if (query) {
+          resultsTitle.textContent = `Search Results for "${query}"`;
+        } else {
+          resultsTitle.textContent = 'Recent Transcripts';
+        }
+
+        displayResults(items);
+      } catch (error) {
+        console.error('Search failed:', error);
+        loadingState.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+        showToastSafe('Error', 'Search failed', 'error');
+      }
+    }, 450);
+
+    if (sortSelect) {
+      sortSelect.addEventListener('change', () => {
+        currentSort = sortSelect.value;
+        displayResults(cachedResults, { cache: false });
+      });
+    }
+
     document.querySelectorAll('[data-filter]').forEach(chip => {
       chip.addEventListener('click', () => {
         document.querySelectorAll('[data-filter]').forEach(c => c.classList.remove('active'));
@@ -310,10 +422,8 @@
       });
     });
 
-    // Search input listener
     searchInput.addEventListener('input', performSearch);
 
-    // Initialize page with authentication
     async function initPage() {
       const authenticated = await Auth.init({ requireAuth: true });
       if (!authenticated) return;

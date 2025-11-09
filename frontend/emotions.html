@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: https:;">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="DENY">
   <title>Nemo Server - Emotion Analytics</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -15,6 +18,17 @@
   <link rel="stylesheet" href="assets/css/main.css">
   <link rel="stylesheet" href="assets/css/components.css">
   <link rel="stylesheet" href="assets/css/animations.css">
+  <style>
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1.5rem;}
+    .analytics-controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.5rem;}
+    .toggle-list{display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem;}
+    .toggle-chip{border:1px solid var(--border-glass);border-radius:999px;padding:0.3rem 0.85rem;display:flex;align-items:center;gap:0.35rem;font-size:0.85rem;cursor:pointer;background:rgba(99,102,241,0.08);}
+    .toggle-chip input{margin:0;}
+    .insight-table{width:100%;border-collapse:collapse;font-size:0.9rem;}
+    .insight-table th,.insight-table td{padding:0.6rem 0.4rem;border-bottom:1px solid var(--glass-border);}
+    .insight-table th{text-align:left;color:var(--text-secondary);font-weight:600;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.08em;}
+    .table-wrapper{max-height:280px;overflow:auto;}
+  </style>
   
   <!-- Chart.js for visualizations -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
@@ -64,6 +78,46 @@
       <p class="text-muted">AI-powered emotion detection across all conversations</p>
     </section>
 
+    <!-- Speech + Speaker Insights -->
+    <section class="grid grid-2 fade-in-up delay-400" style="margin-bottom: 2rem;">
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Speech Pattern Radar</h3>
+        <canvas id="speech-radar-chart" style="max-height: 320px;"></canvas>
+      </div>
+      <div class="glass-card">
+        <h3 style="margin-bottom: 1.5rem;">Speaker Insights</h3>
+        <div class="table-wrapper">
+          <table class="insight-table">
+            <thead>
+              <tr>
+                <th>Speaker</th>
+                <th>Pace</th>
+                <th>Pitch</th>
+                <th>Segments</th>
+                <th>Top Emotion</th>
+              </tr>
+            </thead>
+            <tbody id="speaker-table-body">
+              <tr><td colspan="5" class="text-muted">Loading speaker analytics...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="glass-card fade-in-up delay-250" style="margin-bottom: 2rem;">
+      <div class="analytics-controls">
+        <div>
+          <h4 style="margin-bottom: 0.35rem;">Emotion Layers</h4>
+          <div id="emotion-toggle-list" class="toggle-list"></div>
+        </div>
+        <div>
+          <h4 style="margin-bottom: 0.35rem;">Speech Overlays</h4>
+          <div id="metric-toggle-list" class="toggle-list"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- Time Period Filter -->
     <section class="fade-in-up delay-100" style="margin-bottom: 2rem;">
       <div style="text-align: center;">
@@ -77,23 +131,37 @@
     </section>
 
     <!-- Emotion Overview -->
-    <section class="grid grid-3 fade-in-up delay-200" style="margin-bottom: 3rem;">
-      <div class="stat-card hover-lift">
-        <i data-lucide="smile" style="width: 32px; height: 32px; color: var(--success); margin-bottom: 1rem;"></i>
-        <div class="stat-value" id="joy-count">0</div>
-        <div class="stat-label">Joy Detected</div>
-      </div>
-      
-      <div class="stat-card hover-lift">
-        <i data-lucide="frown" style="width: 32px; height: 32px; color: var(--danger); margin-bottom: 1rem;"></i>
-        <div class="stat-value" id="negative-count">0</div>
-        <div class="stat-label">Negative Emotions</div>
-      </div>
-      
-      <div class="stat-card hover-lift">
-        <i data-lucide="activity" style="width: 32px; height: 32px; color: var(--primary); margin-bottom: 1rem;"></i>
-        <div class="stat-value" id="total-analyzed">0</div>
-        <div class="stat-label">Total Analyzed</div>
+    <section class="fade-in-up delay-200" style="margin-bottom: 3rem;">
+      <div class="stat-grid">
+        <div class="stat-card hover-lift">
+          <i data-lucide="smile" style="width: 32px; height: 32px; color: var(--success); margin-bottom: 1rem;"></i>
+          <div class="stat-value" id="joy-count">0</div>
+          <div class="stat-label">Joy Detected</div>
+        </div>
+        
+        <div class="stat-card hover-lift">
+          <i data-lucide="frown" style="width: 32px; height: 32px; color: var(--danger); margin-bottom: 1rem;"></i>
+          <div class="stat-value" id="negative-count">0</div>
+          <div class="stat-label">Negative Emotions</div>
+        </div>
+        
+        <div class="stat-card hover-lift">
+          <i data-lucide="activity" style="width: 32px; height: 32px; color: var(--primary); margin-bottom: 1rem;"></i>
+          <div class="stat-value" id="total-analyzed">0</div>
+          <div class="stat-label">Total Analyzed</div>
+        </div>
+
+        <div class="stat-card hover-lift">
+          <i data-lucide="wind" style="width: 32px; height: 32px; color: var(--accent-color); margin-bottom: 1rem;"></i>
+          <div class="stat-value" id="avg-pace">0</div>
+          <div class="stat-label">Avg Pace (WPM)</div>
+        </div>
+
+        <div class="stat-card hover-lift">
+          <i data-lucide="audio-lines" style="width: 32px; height: 32px; color: var(--warning); margin-bottom: 1rem;"></i>
+          <div class="stat-value" id="avg-pitch">0</div>
+          <div class="stat-label">Avg Pitch (Hz)</div>
+        </div>
       </div>
     </section>
 
@@ -107,8 +175,8 @@
       
       <!-- Emotion Trends -->
       <div class="glass-card">
-        <h3 style="margin-bottom: 1.5rem;">Emotion Trends Over Time</h3>
-        <canvas id="emotion-line-chart" style="max-height: 300px;"></canvas>
+        <h3 style="margin-bottom: 1.5rem;">Emotion & Speech Timeline</h3>
+        <canvas id="emotion-trend-chart" style="max-height: 300px;"></canvas>
       </div>
     </section>
 
@@ -129,217 +197,796 @@
   <script>
     lucide.createIcons();
 
-    let currentPeriod = 'today';
     let pieChart = null;
-    let lineChart = null;
+    let trendChart = null;
+    let radarChart = null;
 
-    // Load emotion stats
-    async function loadEmotionStats() {
-      try {
-        // Calculate date range based on period
-        let startDate = null;
-        let endDate = null;
-        const now = new Date();
-        
-        if (currentPeriod === 'today') {
-          startDate = now.toISOString().split('T')[0];
-          endDate = startDate;
-        } else if (currentPeriod === 'week') {
-          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          startDate = weekAgo.toISOString().split('T')[0];
-          endDate = now.toISOString().split('T')[0];
-        } else if (currentPeriod === 'month') {
-          const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-          startDate = monthAgo.toISOString().split('T')[0];
-          endDate = now.toISOString().split('T')[0];
-        }
-        
-        // Call new API
-        const stats = await api.getEmotionStats(startDate, endDate);
+    const dashboardState = {
+      period: 'today',
+      selectedEmotions: new Set(),
+      selectedMetrics: new Set(['pace_wpm']),
+      analytics: null,
+      feed: [],
+    };
 
-        if (!stats || stats.success === false) {
-          throw new Error(stats?.error || 'Emotion stats request failed');
-        }
+    const METRIC_LABELS = {
+      pace_wpm: 'Pace',
+      pitch_mean: 'Pitch',
+      volume_rms: 'Volume',
+      volume_peak: 'Volume Peak',
+      pause_ms: 'Pauses',
+      word_count: 'Words',
+    };
 
-        updateStats(stats);
-        updateCharts(stats);
-        updateEmotionFeed(stats);
-      } catch (error) {
-        console.error('Failed to load emotion stats:', error);
-        showToast('Error', 'Failed to load emotion statistics', 'error');
+    const METRIC_COLORS = {
+      pace_wpm: '#f97316',
+      pitch_mean: '#60a5fa',
+      volume_rms: '#ec4899',
+      volume_peak: '#c084fc',
+      pause_ms: '#22d3ee',
+      word_count: '#facc15',
+    };
+
+    const PERIOD_LOOKBACK = {
+      today: 0,
+      week: 6,
+      month: 29,
+    };
+
+    const ALL_METRICS = Object.keys(METRIC_LABELS);
+    const MAX_FEED_ITEMS = 6;
+    const FALLBACK_FEED_LIMIT = 40;
+
+    const safeEscape = (value = '') => {
+      if (typeof window !== 'undefined' && typeof window.escapeHTML === 'function') {
+        return window.escapeHTML(value);
       }
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    };
+
+    function getBaselineConfidence() {
+      if (typeof window !== 'undefined' && typeof window.getEmotionConfidenceBaseline === 'function') {
+        return window.getEmotionConfidenceBaseline();
+      }
+      return 0.7;
     }
 
-    // Update stat cards
-    function updateStats(stats) {
-      const emotions = stats.emotions || [];
-      
-      // Find specific emotions
-      const joyEmotion = emotions.find(e => e.emotion === 'joy');
-      const angerEmotion = emotions.find(e => e.emotion === 'anger');
-      const sadnessEmotion = emotions.find(e => e.emotion === 'sadness');
-      const fearEmotion = emotions.find(e => e.emotion === 'fear');
-      
-      const joyCount = joyEmotion ? joyEmotion.count : 0;
-      const negativeCount = (angerEmotion?.count || 0) + (sadnessEmotion?.count || 0) + (fearEmotion?.count || 0);
-      const totalCount = stats.total_analyzed || 0;
-      
-      document.getElementById('joy-count').textContent = joyCount;
-      document.getElementById('negative-count').textContent = negativeCount;
-      document.getElementById('total-analyzed').textContent = totalCount;
+    function formatDateInput(date) {
+      return date.toISOString().split('T')[0];
     }
-    
-    // Update emotion feed with click-through
-    async function updateEmotionFeed(stats) {
-      const feed = document.getElementById('emotion-feed');
-      feed.innerHTML = '';
-      
-      // Display top emotion segments
-      const topEmotions = (stats.emotions || []).slice(0, 3);
 
-      if (topEmotions.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'text-muted';
-        empty.style.padding = '1rem';
-        empty.textContent = 'No emotional highlights detected for this period.';
-        feed.appendChild(empty);
+    function computePeriodRange(period) {
+      if (period === 'all') return { start: null, end: null };
+      const now = new Date();
+      const end = formatDateInput(now);
+      const lookback = PERIOD_LOOKBACK[period] ?? 6;
+      const startDate = new Date(now.getTime() - lookback * 24 * 60 * 60 * 1000);
+      startDate.setHours(0, 0, 0, 0);
+      return { start: formatDateInput(startDate), end };
+    }
+
+    function normalizeDateKey(value) {
+      if (!value) return null;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return null;
+      return date.toISOString().slice(0, 10);
+    }
+
+    function isWithinRange(value, start, end) {
+      if (!start && !end) return true;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return true;
+      if (start) {
+        const startDt = new Date(`${start}T00:00:00Z`);
+        if (date < startDt) return false;
+      }
+      if (end) {
+        const endDt = new Date(`${end}T23:59:59Z`);
+        if (date > endDt) return false;
+      }
+      return true;
+    }
+
+    function renderToggleList(container, options, selectedSet, colorResolver, onChange) {
+      if (!container) return;
+      container.innerHTML = '';
+      if (!options.length) {
+        container.innerHTML = '<span class="text-muted">No layers available</span>';
         return;
       }
-      
-      for (const emotion of topEmotions) {
-        const card = document.createElement('div');
-        card.className = 'glass-card';
-        card.style.padding = '1rem';
-        card.style.marginBottom = '1rem';
-        card.style.cursor = 'pointer';
-        card.style.transition = 'all 0.2s';
-        
-        card.innerHTML = `
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-              <span class="chip">${emotion.emotion}</span>
-              <span class="text-muted" style="margin-left: 0.5rem;">${emotion.count} instances</span>
-            </div>
-            <i data-lucide="arrow-right" style="width: 20px; height: 20px; color: var(--primary);"></i>
-          </div>
-        `;
-        
-        card.onclick = () => {
-          window.location.href = `analysis.html?emotion=${encodeURIComponent(emotion.emotion)}`;
-        };
-        
-        card.onmouseenter = () => {
-          card.style.borderColor = 'var(--primary)';
-        };
-        card.onmouseleave = () => {
-          card.style.borderColor = 'var(--border-color)';
-        };
-        
-        feed.appendChild(card);
-      }
-      
-      lucide.createIcons();
+
+      options.forEach((option) => {
+        const label = document.createElement('label');
+        label.className = 'toggle-chip';
+        const color = colorResolver ? colorResolver(option) : 'var(--text-secondary)';
+        label.style.borderColor = color;
+        label.style.color = color;
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = selectedSet.has(option);
+        input.addEventListener('change', () => {
+          if (input.checked) {
+            selectedSet.add(option);
+          } else {
+            selectedSet.delete(option);
+          }
+          onChange();
+        });
+
+        const span = document.createElement('span');
+        span.textContent = option.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+        label.appendChild(input);
+        label.appendChild(span);
+        container.appendChild(label);
+      });
+      if (window.lucide) window.lucide.createIcons();
     }
 
-    // Update charts
-    function updateCharts(stats) {
-      const emotions = stats.emotions || [];
-      
-      // Prepare data
-      const labels = emotions.map(e => e.emotion);
-      const data = emotions.map(e => e.count);
-      const colors = labels.map(emotion => getEmotionColor(emotion));
-      
-      // Pie Chart
-      const pieCtx = document.getElementById('emotion-pie-chart').getContext('2d');
-      if (pieChart) pieChart.destroy();
-      
-      pieChart = new Chart(pieCtx, {
+    function ensureSelections(analytics) {
+      const emotionSource = analytics?.timeline?.emotions || {};
+      const availableEmotions = Object.keys(emotionSource).length
+        ? Object.keys(emotionSource)
+        : ['joy', 'anger', 'sadness', 'fear', 'surprise', 'neutral'];
+      if (!dashboardState.selectedEmotions.size) {
+        availableEmotions.slice(0, 3).forEach((emotion) => dashboardState.selectedEmotions.add(emotion));
+      } else {
+        dashboardState.selectedEmotions = new Set(
+          [...dashboardState.selectedEmotions].filter((emotion) => availableEmotions.includes(emotion))
+        );
+        if (!dashboardState.selectedEmotions.size && availableEmotions.length) {
+          dashboardState.selectedEmotions.add(availableEmotions[0]);
+        }
+      }
+
+      const availableMetrics = Array.isArray(analytics?.metrics) && analytics.metrics.length
+        ? analytics.metrics
+        : ALL_METRICS;
+      if (!dashboardState.selectedMetrics.size) {
+        dashboardState.selectedMetrics.add(availableMetrics[0]);
+      } else {
+        dashboardState.selectedMetrics = new Set(
+          [...dashboardState.selectedMetrics].filter((metric) => availableMetrics.includes(metric))
+        );
+        if (!dashboardState.selectedMetrics.size && availableMetrics.length) {
+          dashboardState.selectedMetrics.add(availableMetrics[0]);
+        }
+      }
+
+      renderToggleList(
+        document.getElementById('emotion-toggle-list'),
+        availableEmotions,
+        dashboardState.selectedEmotions,
+        (emotion) => getEmotionColor(emotion),
+        () => renderTrendChart()
+      );
+      renderToggleList(
+        document.getElementById('metric-toggle-list'),
+        availableMetrics,
+        dashboardState.selectedMetrics,
+        (metric) => METRIC_COLORS[metric] || '#94a3b8',
+        () => renderTrendChart()
+      );
+    }
+
+    function renderStats(summary = {}) {
+      document.getElementById('joy-count').textContent = summary.joy_count ?? 0;
+      document.getElementById('negative-count').textContent = summary.negative_count ?? 0;
+      document.getElementById('total-analyzed').textContent = summary.total_analyzed ?? 0;
+      document.getElementById('avg-pace').textContent = summary.avg_pace_wpm
+        ? `${Math.round(summary.avg_pace_wpm)}`
+        : '—';
+      document.getElementById('avg-pitch').textContent = summary.avg_pitch_mean
+        ? `${Math.round(summary.avg_pitch_mean)}`
+        : '—';
+      renderDistribution(summary.emotion_totals || {});
+    }
+
+    function renderDistribution(totals = {}) {
+      const canvas = document.getElementById('emotion-pie-chart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const labels = Object.keys(totals);
+      const friendlyLabels = labels.length
+        ? labels.map((label) => label.charAt(0).toUpperCase() + label.slice(1))
+        : ['No Data'];
+      const data = labels.length ? labels.map((label) => totals[label]) : [1];
+      const colors = labels.length
+        ? labels.map((label) => getEmotionColor(label))
+        : ['rgba(148,163,184,0.35)'];
+      if (pieChart) {
+        pieChart.destroy();
+        pieChart = null;
+      }
+      pieChart = new Chart(ctx, {
         type: 'doughnut',
         data: {
-          labels: labels.map(l => l.charAt(0).toUpperCase() + l.slice(1)),
-          datasets: [{
-            data: data,
-            backgroundColor: colors,
-            borderWidth: 0
-          }]
+          labels: friendlyLabels,
+          datasets: [
+            {
+              data,
+              backgroundColor: colors,
+              borderWidth: 0,
+              hoverOffset: 4,
+            },
+          ],
         },
         options: {
-          responsive: true,
-          maintainAspectRatio: true,
+          cutout: '65%',
           plugins: {
             legend: {
               position: 'bottom',
-              labels: { color: 'var(--text-primary)', font: { size: 12 } }
-            }
-          }
-        }
+              labels: { color: 'var(--text-primary)' },
+            },
+          },
+        },
       });
-      
-      // Line Chart (simplified - show distribution over time)
-      const lineCtx = document.getElementById('emotion-line-chart').getContext('2d');
-      if (lineChart) lineChart.destroy();
-      
-      const trendLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-      const trendData = labels.map((emotion, idx) => ({
-        label: emotion.charAt(0).toUpperCase() + emotion.slice(1),
-        data: Array.from({length: 7}, () => Math.floor(Math.random() * data[idx] + 1)),
-        borderColor: getEmotionColor(emotion),
-        backgroundColor: `${getEmotionColor(emotion)}20`,
-        tension: 0.4
-      }));
-      
-      lineChart = new Chart(lineCtx, {
+    }
+
+    function formatTimelineLabel(dateStr) {
+      if (!dateStr) return 'No data';
+      const date = new Date(`${dateStr}T00:00:00`);
+      if (Number.isNaN(date.getTime())) return dateStr;
+      return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    function ensureChartCanvas(id) {
+      const canvas = document.getElementById(id);
+      if (!canvas) return null;
+      const ctx = canvas.getContext('2d');
+      return ctx;
+    }
+
+    function renderTrendChart() {
+      const ctx = ensureChartCanvas('emotion-trend-chart');
+      if (!ctx) return;
+      const timeline = dashboardState.analytics?.timeline || { dates: [], emotions: {}, speech: {} };
+      const dates = Array.isArray(timeline.dates) ? timeline.dates : [];
+      const labels = dates.length ? dates.map(formatTimelineLabel) : ['No data'];
+      const datasets = [];
+
+      dashboardState.selectedEmotions.forEach((emotion) => {
+        const rawSeries = timeline.emotions?.[emotion] || [];
+        const data = dates.length
+          ? dates.map((_, idx) => rawSeries[idx] ?? 0)
+          : [0];
+        datasets.push({
+          label: emotion.charAt(0).toUpperCase() + emotion.slice(1),
+          data,
+          borderColor: getEmotionColor(emotion),
+          backgroundColor: `${getEmotionColor(emotion)}26`,
+          tension: 0.35,
+          yAxisID: 'yEmotion',
+          borderWidth: 2,
+          fill: false,
+        });
+      });
+
+      dashboardState.selectedMetrics.forEach((metric) => {
+        const rawSeries = timeline.speech?.[metric] || [];
+        const data = dates.length
+          ? dates.map((_, idx) => {
+              const value = rawSeries[idx];
+              return value === null || value === undefined ? null : Number(value);
+            })
+          : [null];
+        datasets.push({
+          label: METRIC_LABELS[metric] || metric,
+          data,
+          borderColor: METRIC_COLORS[metric] || '#94a3b8',
+          backgroundColor: `${(METRIC_COLORS[metric] || '#94a3b8')}33`,
+          borderDash: [6, 3],
+          spanGaps: true,
+          yAxisID: 'yMetric',
+          tension: 0.3,
+          pointRadius: 2,
+        });
+      });
+
+      if (!datasets.length) {
+        datasets.push({
+          label: 'No data',
+          data: labels.map(() => 0),
+          borderColor: 'rgba(148,163,184,0.35)',
+          borderDash: [4, 4],
+          pointRadius: 0,
+          yAxisID: 'yEmotion',
+        });
+      }
+
+      if (trendChart) {
+        trendChart.destroy();
+        trendChart = null;
+      }
+
+      trendChart = new Chart(ctx, {
         type: 'line',
         data: {
-          labels: trendLabels,
-          datasets: trendData
+          labels,
+          datasets,
         },
         options: {
-          responsive: true,
-          maintainAspectRatio: true,
+          interaction: { mode: 'index', intersect: false },
+          maintainAspectRatio: false,
           plugins: {
-            legend: {
-              position: 'bottom',
-              labels: { color: 'var(--text-primary)', font: { size: 12 } }
-            }
+            legend: { labels: { color: 'var(--text-primary)' } },
+            tooltip: {
+              callbacks: {
+                label(context) {
+                  const label = context.dataset.label || '';
+                  const value = context.parsed.y;
+                  if (value === null || value === undefined) return `${label}: —`;
+                  return `${label}: ${Math.round(value * 100) / 100}`;
+                },
+              },
+            },
           },
           scales: {
-            y: {
+            yEmotion: {
+              position: 'left',
               beginAtZero: true,
-              ticks: { color: 'var(--text-tertiary)' },
-              grid: { color: 'var(--glass-border)' }
+              grid: { color: 'rgba(148,163,184,0.15)' },
+              ticks: { color: 'var(--text-secondary)' },
+            },
+            yMetric: {
+              position: 'right',
+              beginAtZero: false,
+              grid: { drawOnChartArea: false },
+              ticks: { color: 'var(--text-secondary)' },
             },
             x: {
-              ticks: { color: 'var(--text-tertiary)' },
-              grid: { color: 'var(--glass-border)' }
-            }
-          }
-        }
+              ticks: { color: 'var(--text-secondary)' },
+              grid: { color: 'rgba(148,163,184,0.1)' },
+            },
+          },
+        },
       });
     }
 
-    // Time period filter
-    document.querySelectorAll('[data-period]').forEach(chip => {
-      chip.addEventListener('click', () => {
-        document.querySelectorAll('[data-period]').forEach(c => c.classList.remove('active'));
-        chip.classList.add('active');
-        currentPeriod = chip.dataset.period;
-        loadEmotionStats();
-      });
-    });
+    function averageMetric(speakers, key) {
+      if (!Array.isArray(speakers) || !speakers.length) return 0;
+      const values = speakers
+        .map((speaker) => (typeof speaker[key] === 'number' ? speaker[key] : null))
+        .filter((value) => value !== null);
+      if (!values.length) return 0;
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
 
-    // Initialize page with authentication
+    function renderRadarChart() {
+      const ctx = ensureChartCanvas('speech-radar-chart');
+      if (!ctx) return;
+      const speakers = Array.isArray(dashboardState.analytics?.speakers)
+        ? dashboardState.analytics.speakers
+        : [];
+      if (!speakers.length) {
+        if (radarChart) {
+          radarChart.destroy();
+          radarChart = null;
+        }
+        ctx.canvas.style.opacity = '0.4';
+        return;
+      }
+
+      ctx.canvas.style.opacity = '1';
+      const metrics = ['pace_wpm', 'pitch_mean', 'volume_rms', 'volume_peak', 'pause_ms', 'word_count'];
+      const data = metrics.map((metric) => averageMetric(speakers, metric));
+      const labels = metrics.map((metric) => METRIC_LABELS[metric] || metric);
+      const maxValue = Math.max(...data.filter((value) => Number.isFinite(value)), 1) || 1;
+
+      if (radarChart) {
+        radarChart.destroy();
+        radarChart = null;
+      }
+
+      radarChart = new Chart(ctx, {
+        type: 'radar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Speech Signature',
+              data,
+              borderColor: 'rgba(99,102,241,0.9)',
+              backgroundColor: 'rgba(99,102,241,0.35)',
+              borderWidth: 2,
+              pointBackgroundColor: 'rgba(99,102,241,1)',
+            },
+          ],
+        },
+        options: {
+          scales: {
+            r: {
+              angleLines: { color: 'rgba(148,163,184,0.2)' },
+              grid: { color: 'rgba(148,163,184,0.2)' },
+              suggestedMin: 0,
+              suggestedMax: maxValue * 1.2 || 1,
+              pointLabels: { color: 'var(--text-secondary)', font: { size: 12 } },
+              ticks: { display: false },
+            },
+          },
+          plugins: {
+            legend: { display: false },
+          },
+        },
+      });
+    }
+
+    function renderSpeakerTable() {
+      const tbody = document.getElementById('speaker-table-body');
+      if (!tbody) return;
+      const speakers = Array.isArray(dashboardState.analytics?.speakers)
+        ? dashboardState.analytics.speakers
+        : [];
+      if (!speakers.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No speaker analytics yet.</td></tr>';
+        return;
+      }
+
+      const rows = speakers
+        .slice()
+        .sort((a, b) => (b.segments || 0) - (a.segments || 0))
+        .slice(0, 12)
+        .map((speaker) => {
+          const speakerId = speaker.speaker || 'Unknown';
+          const avatar = createSpeakerAvatar(speakerId);
+          const mix = speaker.emotion_mix || {};
+          const mixEntries = Object.entries(mix).sort((a, b) => b[1] - a[1]);
+          const [topEmotion, topCount] = mixEntries[0] || [null, null];
+          const totalEmotionSamples = mixEntries.reduce((sum, [, count]) => sum + count, 0);
+          const emotionConfidence = totalEmotionSamples ? topCount / totalEmotionSamples : null;
+          const badge = topEmotion ? createEmotionBadge(topEmotion, emotionConfidence) : null;
+          const pace = speaker.pace_wpm ? `${Math.round(speaker.pace_wpm)} wpm` : '—';
+          const pitch = speaker.pitch_mean ? `${Math.round(speaker.pitch_mean)} Hz` : '—';
+          const segments = speaker.segments ?? '—';
+          return `
+            <tr>
+              <td>
+                <div style="display:flex;align-items:center;gap:0.6rem;">
+                  ${avatar.outerHTML}
+                  <div>
+                    <div style="font-weight:600;">${safeEscape(speakerId)}</div>
+                    <div class="text-muted" style="font-size:0.75rem;">${segments} segments</div>
+                  </div>
+                </div>
+              </td>
+              <td>${pace}</td>
+              <td>${pitch}</td>
+              <td>${segments}</td>
+              <td>${badge ? badge.outerHTML : '<span class="text-muted">—</span>'}</td>
+            </tr>
+          `;
+        })
+        .join('');
+      tbody.innerHTML = rows;
+    }
+
+    function renderEmotionFeed(items) {
+      const container = document.getElementById('emotion-feed');
+      if (!container) return;
+      if (!Array.isArray(items) || !items.length) {
+        container.innerHTML = `
+          <div class="text-muted" style="text-align:center; padding: 1.5rem 0;">
+            No transcripts captured yet.
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = '';
+      items.slice(0, MAX_FEED_ITEMS).forEach((item, index) => {
+        const segments = Array.isArray(item.segments) ? item.segments : [];
+        const dominantSegment = segments.find((seg) => seg?.emotion) || segments[0] || null;
+        const speakerName =
+          (dominantSegment && dominantSegment.speaker) ||
+          (Array.isArray(item.speakers) && item.speakers[0]) ||
+          'Unknown';
+        const emotion = (dominantSegment && dominantSegment.emotion) || item.dominant_emotion || null;
+        const confidence = dominantSegment?.emotion_confidence;
+        const snippetSource = (dominantSegment && dominantSegment.text) || item.full_text || '';
+        const snippet = snippetSource.length > 260 ? `${snippetSource.slice(0, 257)}...` : snippetSource;
+        const jobId = item.job_id || item.session_id || '';
+        const badge = emotion ? createEmotionBadge(emotion, confidence) : null;
+        const avatar = createSpeakerAvatar(speakerName || `Speaker ${index + 1}`);
+        const timestamp = item.created_at || item.timestamp;
+
+        const card = document.createElement('div');
+        card.className = 'card hover-lift fade-in-up';
+        card.style.marginBottom = '1rem';
+        card.innerHTML = `
+          <div class="card-header" style="gap:1rem;">
+            ${avatar.outerHTML}
+            <div style="flex:1;">
+              <div style="font-weight:600;">${safeEscape(speakerName)}</div>
+              <div class="text-muted" style="font-size:0.8rem;">${timestamp ? formatTime(timestamp) : 'Recent'}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              ${badge ? badge.outerHTML : ''}
+              <span class="badge" style="background:rgba(15,23,42,0.7); color:var(--text-primary);">
+                ${item.segment_count || segments.length || 0} segments
+              </span>
+            </div>
+          </div>
+          <div class="card-body" style="background:rgba(15,23,42,0.55); border-radius:0.85rem;">
+            ${safeEscape(snippet || 'Transcript text not available yet.')}
+          </div>
+          <div class="card-footer" style="display:flex;justify-content:space-between;align-items:center;">
+            <span class="text-muted" style="font-size:0.8rem;">Confidence baseline ${Math.round(getBaselineConfidence() * 100)}%</span>
+            ${jobId
+              ? `<button class="btn btn-ghost btn-sm" onclick="window.location.href='transcripts.html?job=${encodeURIComponent(jobId)}'">Open</button>`
+              : ''}
+          </div>
+        `;
+        container.appendChild(card);
+      });
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    function deriveAvailableMetrics(transcripts) {
+      const sampleSegments = transcripts.flatMap((t) => Array.isArray(t.segments) ? t.segments : []);
+      const metrics = ALL_METRICS.filter((metric) =>
+        sampleSegments.some((seg) => Number.isFinite(Number(seg?.[metric])))
+      );
+      if (!metrics.length) return [ALL_METRICS[0]];
+      return metrics;
+    }
+
+    function buildFallbackAnalytics(transcripts, { start, end }) {
+      const filtered = transcripts.filter((t) => {
+        const createdAt = t.created_at || t.timestamp;
+        if (!createdAt) return true;
+        return isWithinRange(createdAt, start, end);
+      });
+      if (!filtered.length) {
+        return {
+          summary: {
+            emotion_totals: {},
+            joy_count: 0,
+            negative_count: 0,
+            total_analyzed: 0,
+            avg_pace_wpm: null,
+            avg_pitch_mean: null,
+            avg_pause_ms: null,
+          },
+          timeline: { dates: [], emotions: {}, speech: {} },
+          speakers: [],
+          metrics: ALL_METRICS.slice(0, 1),
+        };
+      }
+
+      const availableMetrics = deriveAvailableMetrics(filtered);
+      const emotionTotals = {};
+      let totalSegments = 0;
+
+      const metricTotals = availableMetrics.reduce((acc, metric) => {
+        acc[metric] = { sum: 0, count: 0 };
+        return acc;
+      }, {});
+
+      const dateBuckets = new Map();
+      const speakerBuckets = new Map();
+
+      filtered.forEach((transcript) => {
+        const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
+        const dateKey = normalizeDateKey(transcript.created_at || transcript.timestamp) || 'unknown';
+        let bucket = dateBuckets.get(dateKey);
+        if (!bucket) {
+          bucket = {
+            emotions: {},
+            metrics: availableMetrics.reduce((acc, metric) => {
+              acc[metric] = { sum: 0, count: 0 };
+              return acc;
+            }, {}),
+          };
+          dateBuckets.set(dateKey, bucket);
+        }
+
+        segments.forEach((segment) => {
+          const emotion = (segment?.emotion || segment?.dominant_emotion || '').toLowerCase();
+          if (emotion) {
+            emotionTotals[emotion] = (emotionTotals[emotion] || 0) + 1;
+            bucket.emotions[emotion] = (bucket.emotions[emotion] || 0) + 1;
+          }
+          totalSegments += 1;
+          availableMetrics.forEach((metric) => {
+            const value = Number(segment?.[metric]);
+            if (Number.isFinite(value)) {
+              metricTotals[metric].sum += value;
+              metricTotals[metric].count += 1;
+              bucket.metrics[metric].sum += value;
+              bucket.metrics[metric].count += 1;
+            }
+          });
+
+          const speakerId = segment?.speaker || 'Unknown Speaker';
+          if (!speakerBuckets.has(speakerId)) {
+            speakerBuckets.set(speakerId, {
+              speaker: speakerId,
+              segments: 0,
+              emotion_mix: {},
+              metrics: availableMetrics.reduce((acc, metric) => {
+                acc[metric] = { sum: 0, count: 0 };
+                return acc;
+              }, {}),
+            });
+          }
+          const speakerBucket = speakerBuckets.get(speakerId);
+          speakerBucket.segments += 1;
+          if (emotion) {
+            speakerBucket.emotion_mix[emotion] = (speakerBucket.emotion_mix[emotion] || 0) + 1;
+          }
+          availableMetrics.forEach((metric) => {
+            const value = Number(segment?.[metric]);
+            if (Number.isFinite(value)) {
+              speakerBucket.metrics[metric].sum += value;
+              speakerBucket.metrics[metric].count += 1;
+            }
+          });
+        });
+      });
+
+      const dates = Array.from(dateBuckets.keys()).sort();
+      const emotionSeries = {};
+      const speechSeries = availableMetrics.reduce((acc, metric) => {
+        acc[metric] = new Array(dates.length).fill(null);
+        return acc;
+      }, {});
+
+      dates.forEach((date, index) => {
+        const bucket = dateBuckets.get(date);
+        if (!bucket) return;
+        Object.entries(bucket.emotions).forEach(([emotion, count]) => {
+          if (!emotionSeries[emotion]) {
+            emotionSeries[emotion] = new Array(dates.length).fill(0);
+          }
+          emotionSeries[emotion][index] = count;
+        });
+        availableMetrics.forEach((metric) => {
+          const { sum, count } = bucket.metrics[metric];
+          if (count) {
+            speechSeries[metric][index] = sum / count;
+          }
+        });
+      });
+
+      const speakerProfiles = Array.from(speakerBuckets.values()).map((speaker) => {
+        const profile = {
+          speaker: speaker.speaker,
+          segments: speaker.segments,
+          emotion_mix: speaker.emotion_mix,
+        };
+        availableMetrics.forEach((metric) => {
+          const data = speaker.metrics[metric];
+          profile[metric] = data.count ? data.sum / data.count : null;
+        });
+        return profile;
+      });
+
+      const summary = {
+        emotion_totals: emotionTotals,
+        joy_count: emotionTotals.joy || 0,
+        negative_count: (emotionTotals.anger || 0) + (emotionTotals.sadness || 0) + (emotionTotals.fear || 0),
+        total_analyzed: totalSegments,
+        avg_pace_wpm: metricTotals.pace_wpm?.count
+          ? metricTotals.pace_wpm.sum / metricTotals.pace_wpm.count
+          : null,
+        avg_pitch_mean: metricTotals.pitch_mean?.count
+          ? metricTotals.pitch_mean.sum / metricTotals.pitch_mean.count
+          : null,
+        avg_pause_ms: metricTotals.pause_ms?.count
+          ? metricTotals.pause_ms.sum / metricTotals.pause_ms.count
+          : null,
+      };
+
+      return {
+        summary,
+        timeline: {
+          dates,
+          emotions: emotionSeries,
+          speech: speechSeries,
+        },
+        speakers: speakerProfiles,
+        metrics: availableMetrics,
+      };
+    }
+
+    function renderDashboard() {
+      if (!dashboardState.analytics) {
+        renderStats({});
+        renderTrendChart();
+        renderRadarChart();
+        renderSpeakerTable();
+        return;
+      }
+      renderStats(dashboardState.analytics.summary || {});
+      renderTrendChart();
+      renderRadarChart();
+      renderSpeakerTable();
+    }
+
+    async function fetchAnalytics() {
+      const { start, end } = computePeriodRange(dashboardState.period);
+      const params = {};
+      if (start) params.start_date = start;
+      if (end) params.end_date = end;
+      params.metrics = ALL_METRICS;
+
+      let analytics = null;
+      try {
+        analytics = await api.getAnalyticsSignals(params);
+      } catch (error) {
+        console.warn('Primary analytics service unavailable, falling back.', error);
+      }
+
+      if (!analytics || !analytics.summary || !analytics.summary.total_analyzed) {
+        const fallbackTranscripts = dashboardState.feed.length
+          ? dashboardState.feed
+          : await fetchEmotionFeed({ limit: FALLBACK_FEED_LIMIT, silent: true });
+        analytics = buildFallbackAnalytics(fallbackTranscripts, { start, end });
+      }
+
+      dashboardState.analytics = analytics;
+      ensureSelections(analytics);
+      renderDashboard();
+    }
+
+    async function fetchEmotionFeed(options = {}) {
+      const { limit = 10, silent = false } = options;
+      try {
+        const recent = await api.getRecentTranscripts(limit);
+        const items = Array.isArray(recent?.transcripts)
+          ? recent.transcripts
+          : Array.isArray(recent)
+            ? recent
+            : [];
+        dashboardState.feed = items;
+        renderEmotionFeed(items);
+        if (!silent && (!items || !items.length)) {
+          showToast('No Transcripts Yet', 'Start a transcription to populate analytics.', 'info', 2500);
+        }
+        return items;
+      } catch (error) {
+        console.error('Failed to load transcripts feed', error);
+        dashboardState.feed = [];
+        renderEmotionFeed([]);
+        if (!silent) {
+          showToast('Transcripts Error', 'Unable to load recent transcripts.', 'error');
+        }
+        return [];
+      }
+    }
+
+    function setPeriod(period) {
+      if (dashboardState.period === period) return;
+      dashboardState.period = period;
+      document.querySelectorAll('#time-filter .chip').forEach((chip) => {
+        chip.classList.toggle('active', chip.dataset.period === period);
+      });
+      fetchAnalytics();
+    }
+
+    function initPeriodControls() {
+      document.querySelectorAll('#time-filter .chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          const period = chip.dataset.period || 'today';
+          setPeriod(period);
+        });
+      });
+    }
+
     async function initPage() {
-      // Enforce authentication
       const authenticated = await Auth.init({ requireAuth: true });
       if (!authenticated) return;
-      
-      // Initial load
-      loadEmotionStats();
+      initPeriodControls();
+      await Promise.all([fetchAnalytics(), fetchEmotionFeed()]);
     }
-    
-    // Call on DOM ready
+
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', initPage);
     } else {

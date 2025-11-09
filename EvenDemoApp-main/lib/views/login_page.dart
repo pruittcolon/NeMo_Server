@@ -291,6 +291,28 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                                     ),
                                   ),
                           ),
+                          const SizedBox(height: 16),
+
+                          // Skip Login Button (Guest Access)
+                          OutlinedButton.icon(
+                            onPressed: _isLoading ? null : _navigateToHome,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: accentColor,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              side: BorderSide(color: accentColor, width: 2),
+                            ),
+                            icon: const Icon(Icons.skip_next, size: 20),
+                            label: const Text(
+                              'Continue as Guest',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),

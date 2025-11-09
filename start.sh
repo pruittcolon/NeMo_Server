@@ -22,6 +22,7 @@ cd "$SCRIPT_DIR"
 API_GATEWAY_URL="${API_GATEWAY_URL:-http://localhost:8000}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-120}"  # seconds
 BROWSER_OPEN_DELAY=5      # seconds after services are healthy
+SHOULD_EXIT=false
 
 # ============================================================================
 # Helper Functions
@@ -48,6 +49,29 @@ print_error() {
 print_info() {
     echo -e "${BLUE}ℹ${NC}  $1"
 }
+
+cleanup() {
+    if [ "$SHOULD_EXIT" = true ]; then
+        exit 0
+    fi
+    SHOULD_EXIT=true
+    echo -e "\n${YELLOW}Stopping Nemo Server services...${NC}"
+
+    if [ -d "$SCRIPT_DIR/docker" ]; then
+        pushd "$SCRIPT_DIR/docker" >/dev/null 2>&1 || true
+        if command -v docker-compose &> /dev/null; then
+            docker-compose down >/dev/null 2>&1 || true
+        else
+            docker compose down >/dev/null 2>&1 || true
+        fi
+        popd >/dev/null 2>&1 || true
+    fi
+
+    echo -e "${GREEN}All services stopped. Goodbye!${NC}"
+    exit 0
+}
+
+trap cleanup INT TERM
 
 check_dependencies() {
     print_header "Checking Dependencies"
@@ -300,37 +324,30 @@ open_browser() {
     print_info "Waiting ${BROWSER_OPEN_DELAY}s before opening browser..."
     sleep $BROWSER_OPEN_DELAY
     
+    local gateway_url="${API_GATEWAY_URL}/ui/login.html"
+    print_info "Gateway UI: $gateway_url"
+
     # Determine which browser command to use
-    # Open the API Gateway UI (served at /ui) first so the frontend is same-origin
     if command -v xdg-open &> /dev/null; then
-        # Linux with xdg-open
-        print_info "Opening API Gateway UI in browser..."
-        xdg-open "$API_GATEWAY_URL/ui/login.html" 2>/dev/null &
-        
-        print_success "Browser opened"
+        print_info "Opening API Gateway UI in default browser..."
+        xdg-open "$gateway_url" >/dev/null 2>&1 || true
+        print_success "Browser launch attempted (xdg-open)"
     elif command -v open &> /dev/null; then
-        # macOS
         print_info "Opening API Gateway UI in browser..."
-        open "$API_GATEWAY_URL/ui/login.html" 2>/dev/null &
-        
-        print_success "Browser opened"
+        open "$gateway_url" >/dev/null 2>&1 || true
+        print_success "Browser launch attempted (open)"
     elif command -v firefox &> /dev/null; then
-        # Fallback to firefox
         print_info "Opening API Gateway UI in Firefox..."
-        firefox "$API_GATEWAY_URL/ui/login.html" 2>/dev/null &
-        
-        print_success "Browser opened"
+        firefox "$gateway_url" >/dev/null 2>&1 &
+        print_success "Browser launch attempted (firefox)"
     elif command -v google-chrome &> /dev/null; then
-        # Fallback to chrome
         print_info "Opening API Gateway UI in Chrome..."
-        google-chrome "$API_GATEWAY_URL/ui/login.html" 2>/dev/null &
-        
-        print_success "Browser opened"
+        google-chrome "$gateway_url" >/dev/null 2>&1 &
+        print_success "Browser launch attempted (chrome)"
     else
         print_warning "No browser command found"
         print_info "Please open manually:"
-        print_info "  Frontend: file://$(pwd)/frontend/index.html"
-        print_info "  API Gateway: $API_GATEWAY_URL"
+        print_info "  API Gateway UI: $gateway_url"
     fi
 }
 
@@ -469,7 +486,7 @@ trap 'echo -e "\n${BLUE}Showing logs (Ctrl+C again to exit)...${NC}\n"; cd docke
 # Run main function
 main
 
-# Keep script running to show any immediate errors
-sleep 2
-
-exit 0
+echo -e "${BLUE}Press Ctrl+C to stop all services and exit.${NC}"
+while true; do
+    sleep 86400
+done

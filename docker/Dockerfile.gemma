@@ -59,7 +59,7 @@ RUN pip3 install --break-system-packages --no-cache-dir /tmp/llama_cpp_python-*.
 RUN pip3 install --break-system-packages --no-cache-dir -r requirements.txt
 
 # Copy service code
-COPY services/gemma-service/src/main.py /app/main.py
+COPY services/gemma-service/src/ /app/
 COPY shared /app/shared
 
 # Create runtime dirs

@@ -232,6 +232,24 @@
 
   <!-- Scripts -->
   <script>
+    const API_BASE = (() => {
+      const hints = [
+        window.API_BASE_URL,
+        window.API_GATEWAY_URL,
+        window.location && window.location.origin && window.location.origin !== 'null' && window.location.origin.startsWith('http')
+          ? window.location.origin
+          : null,
+      ].filter(Boolean);
+      const base = hints[0] || 'http://localhost:8000';
+      return base.replace(/\/+$/, '');
+    })();
+
+    const buildApiUrl = (path) => {
+      if (!path) return API_BASE;
+      const normalized = path.startsWith('/') ? path : `/${path}`;
+      return `${API_BASE}${normalized}`;
+    };
+
     const form = document.getElementById('login-form');
     const errorMessage = document.getElementById('error-message');
     const loginButton = document.getElementById('login-button');
@@ -240,8 +258,8 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       
-      const username = document.getElementById('username').value;
-      const password = document.getElementById('password').value;
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value.trim();
       
       // Hide error
       errorMessage.classList.remove('show');
@@ -251,7 +269,7 @@
       loadingSpinner.style.display = 'inline-block';
       
       try {
-        const response = await fetch('/api/auth/login', {
+        const response = await fetch(buildApiUrl('/api/auth/login'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -259,15 +277,18 @@
           credentials: 'include',  // Required for cookie-based sessions
           body: JSON.stringify({ username, password })
         });
-        
-        const data = await response.json();
-        
+
+        let data = {};
+        try { data = await response.clone().json(); } catch (e) { /* non-JSON */ }
+        const serverDetail = data.detail || data.message;
+
         if (response.ok && data.success) {
           // Success! Redirect to dashboard
           window.location.href = 'index.html';
         } else {
-          // Show error
-          errorMessage.textContent = data.message || 'Invalid credentials. Please try again.';
+          // Show specific server reason when available (handles 401/403/429/CSRF)
+          const statusInfo = `HTTP ${response.status} ${response.statusText || ''}`.trim();
+          errorMessage.textContent = serverDetail || statusInfo || 'Login failed. Please try again.';
           errorMessage.classList.add('show');
         }
       } catch (error) {

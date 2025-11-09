@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: https:;">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="DENY">
   <title>Nemo Server - Transcriptions</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -415,7 +418,10 @@
       if (memory.segments && memory.segments.length > 0) {
         segmentsHtml = memory.segments.map(seg => {
           const emotionColor = seg.emotion ? (emotionColors[seg.emotion] || '#6b7280') : '#6b7280';
-          const confidence = seg.emotion_confidence ? `${Math.round(seg.emotion_confidence * 100)}%` : '';
+          const normalizedConfidence = typeof window !== 'undefined' && typeof window.normalizeEmotionConfidence === 'function'
+            ? window.normalizeEmotionConfidence(seg.emotion_confidence)
+            : (typeof seg.emotion_confidence === 'number' ? Math.max(0, Math.min(1, seg.emotion_confidence)) : 0.7);
+          const confidence = `${Math.round(normalizedConfidence * 100)}%`;
           const timeRange = seg.start_time !== null && seg.end_time !== null 
             ? `${seg.start_time.toFixed(1)}s - ${seg.end_time.toFixed(1)}s` 
             : '';
@@ -513,4 +519,3 @@
 
 </body>
 </html>
-

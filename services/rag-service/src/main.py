@@ -10,8 +10,10 @@ import json
 import sqlite3
 import uuid
 import threading
+import re
+from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
@@ -49,6 +51,24 @@ EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 dimension
 # Global state
 rag_service = None
 service_auth = None
+
+WORD_REGEX = re.compile(r"[A-Za-z0-9']+")
+FILLER_PATTERNS = [
+    re.compile(rf"\b{phrase}\b", re.IGNORECASE)
+    for phrase in [
+        "um",
+        "uh",
+        "er",
+        "ah",
+        "like",
+        "you know",
+        "i mean",
+        "sort of",
+        "kind of",
+        "basically",
+        "actually",
+    ]
+]
 
 
 # ============================================================================
@@ -143,12 +163,19 @@ class RAGService:
 
         # Initialize components
         self._init_directories()
-        self._init_embedding_model()
         self._init_database()
-        self._init_faiss_index()
-        self._load_existing_data()
+        self.emotion_column = "emotion"
+        # Defer embeddings/FAISS until needed to speed startup
+        self.embedding_model = None
+        self.faiss_index = None
+        self._detect_schema()
+        if os.getenv("RAG_ENABLE_SEMANTIC", "true").lower() not in {"1", "true", "yes"}:
+            logger.info("[RAG] Semantic indexing disabled via RAG_ENABLE_SEMANTIC=false")
+        else:
+            logger.info("[RAG] Semantic indexing enabled (lazy init)")
         
         logger.info("RAG Service initialized successfully")
+        logger.info(f"[RAG] Using emotion column: {self.emotion_column}")
     
     def _init_directories(self):
         """Ensure required directories exist"""
@@ -215,6 +242,7 @@ class RAGService:
                     FOREIGN KEY (transcript_id) REFERENCES transcript_records(id)
                 )
             """)
+            self._ensure_segment_column_extensions(cur)
             
             # Memories table
             cur.execute("""
@@ -229,6 +257,51 @@ class RAGService:
                     created_at TEXT
                 )
             """)
+
+            # Analysis artifacts table (stores persisted analyzer runs and meta-analyses)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artifact_id TEXT UNIQUE,
+                    analysis_id TEXT,
+                    title TEXT,
+                    body TEXT,
+                    metadata TEXT,
+                    embedding BLOB,
+                    created_at TEXT
+                )
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_created_at
+                ON analysis_artifacts(created_at)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_artifact_id
+                ON analysis_artifacts(artifact_id)
+            """)
+
+            # Artifact chunks table (optional fine-grained retrieval)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_artifact_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artifact_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    chunk_text TEXT NOT NULL,
+                    token_estimate INTEGER,
+                    embedding BLOB,
+                    created_at TEXT,
+                    UNIQUE(artifact_id, seq)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chunks_artifact
+                ON analysis_artifact_chunks(artifact_id, seq)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chunks_created
+                ON analysis_artifact_chunks(created_at)
+            """)
             
             # Indexes for performance
             cur.execute("CREATE INDEX IF NOT EXISTS idx_segments_transcript ON transcript_segments(transcript_id)")
@@ -238,6 +311,7 @@ class RAGService:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_memories_doc_id ON memories(doc_id)")
             
             conn.commit()
+            conn.commit()
             conn.close()
             try:
                 self.db_path.chmod(0o600)
@@ -246,10 +320,447 @@ class RAGService:
             
             logger.info("Database schema initialized")
 
+    def _detect_schema(self):
+        """Detect whether transcript_segments uses 'emotion' or 'dominant_emotion'."""
+        candidate = "emotion"
+        try:
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                cur.execute("PRAGMA table_info(transcript_segments)")
+                rows = cur.fetchall()
+                conn.close()
+            columns = set()
+            for row in rows:
+                try:
+                    columns.add(row["name"])
+                except (KeyError, TypeError):
+                    # row can be tuple (index, name, type, ...); name at position 1
+                    columns.add(row[1])
+            if "emotion" in columns:
+                candidate = "emotion"
+            elif "dominant_emotion" in columns:
+                candidate = "dominant_emotion"
+            else:
+                logger.warning("[RAG] emotion column not found in schema, defaulting to 'emotion'")
+        except Exception as exc:
+            logger.warning(f"[RAG] Failed to detect emotion column: {exc}")
+        self.emotion_column = candidate
+
     def _connect(self) -> sqlite3.Connection:
         conn = self._db.connect()
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _normalize_filter_list(value: Optional[Any]) -> List[str]:
+        if not value:
+            return []
+        if isinstance(value, (str, bytes)):
+            return [str(value)]
+        normalized: List[str] = []
+        iterable = value if isinstance(value, (list, tuple, set)) else [value]
+        for item in iterable:
+            if isinstance(item, dict):
+                for key in ("value", "name", "id", "speaker", "emotion"):
+                    if item.get(key):
+                        normalized.append(str(item[key]))
+                        break
+                else:
+                    normalized.append(str(item))
+            else:
+                normalized.append(str(item))
+        return normalized
+
+    @staticmethod
+    def _trim_text(value: Optional[str], max_chars: int = 1200) -> str:
+        if not value:
+            return ""
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars].rstrip() + "…"
+
+    def _build_segment_filters(self, filters: Dict[str, Any]) -> Tuple[List[str], List[Any]]:
+        conditions: List[str] = ["ts.text IS NOT NULL", "ts.text != ''"]
+        params: List[Any] = []
+
+        speakers = self._normalize_filter_list(filters.get("speakers"))
+        if speakers:
+            placeholders = ",".join(["?"] * len(speakers))
+            conditions.append(f"LOWER(ts.speaker) IN ({placeholders})")
+            params.extend([s.lower() for s in speakers])
+
+        emotions = self._normalize_filter_list(filters.get("emotions"))
+        if emotions:
+            placeholders = ",".join(["?"] * len(emotions))
+            conditions.append(f"LOWER(COALESCE(ts.{self.emotion_column}, '')) IN ({placeholders})")
+            params.extend([e.lower() for e in emotions])
+
+        start_date_utc = filters.get("start_date_utc") or filters.get("start_date_iso")
+        end_date_utc = filters.get("end_date_utc") or filters.get("end_date_iso")
+        start_date = filters.get("start_date")
+        end_date = filters.get("end_date")
+        if start_date_utc:
+            conditions.append("tr.created_at >= ?")
+            params.append(str(start_date_utc))
+        elif start_date:
+            conditions.append("tr.created_at >= ?")
+            params.append(f"{start_date}T00:00:00")
+        if end_date_utc:
+            conditions.append("tr.created_at <= ?")
+            params.append(str(end_date_utc))
+        elif end_date:
+            conditions.append("tr.created_at <= ?")
+            params.append(f"{end_date}T23:59:59")
+
+        last_n = filters.get("last_n_transcripts")
+        if last_n:
+            try:
+                recent_ids = self._get_recent_transcript_ids(int(last_n))
+            except Exception:
+                recent_ids = set()
+            if recent_ids:
+                placeholders = ",".join(["?"] * len(recent_ids))
+                conditions.append(f"ts.transcript_id IN ({placeholders})")
+                params.extend(list(recent_ids))
+
+        raw_keywords = filters.get("keywords")
+        keywords = [k.strip() for k in str(raw_keywords or "").split(",") if k.strip()]
+        search_type = (filters.get("search_type") or "keyword").lower()
+        if keywords and search_type != "semantic":
+            match_all = (filters.get("match") or "any").lower() == "all"
+            escaped_tokens = [self._escape_like(token.lower()) for token in keywords]
+            like_clauses = ["LOWER(ts.text) LIKE ? ESCAPE '\\\\'" for _ in escaped_tokens]
+            if match_all:
+                conditions.extend(like_clauses)
+            else:
+                conditions.append("(" + " OR ".join(like_clauses) + ")")
+            params.extend([f"%{token}%" for token in escaped_tokens])
+
+        return conditions, params
+
+    def count_transcripts_filtered(self, filters: Dict[str, Any]) -> int:
+        search_type = (filters.get("search_type") or "keyword").lower()
+        keywords = [k.strip() for k in str(filters.get("keywords", "")).split(",") if k.strip()]
+
+        if keywords and search_type == "semantic":
+            query = ", ".join(keywords)
+            top_k = min(int(filters.get("limit", 50) or 50), 200)
+            results = self.search_semantic(
+                query=query,
+                top_k=top_k,
+                doc_type='transcript_segment',
+                start_date=filters.get('start_date_utc') or filters.get('start_date'),
+                end_date=filters.get('end_date_utc') or filters.get('end_date'),
+                speakers=self._normalize_filter_list(filters.get('speakers')),
+                bias_emotions=self._normalize_filter_list(filters.get('emotions')),
+            )
+            count = len(results or [])
+            logger.info(f"[RAG] Semantic count for '{query}' -> {count}")
+            return count
+
+        conditions, params = self._build_segment_filters(filters)
+
+        try:
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                where_clause = " AND ".join(conditions) if conditions else "1=1"
+                logger.info(
+                    "[RAG] count filters=%s where=%s params=%s",
+                    {k: filters.get(k) for k in ("limit", "speakers", "emotions", "start_date", "end_date", "keywords", "search_type", "match")},
+                    where_clause,
+                    params,
+                )
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM transcript_segments ts
+                    JOIN transcript_records tr ON ts.transcript_id = tr.id
+                    WHERE {where_clause}
+                    """,
+                    params,
+                )
+                row = cur.fetchone()
+                conn.close()
+            count = int(row[0]) if row else 0
+            logger.info(f"[RAG] SQL transcript count -> {count}")
+            return count
+        except Exception as e:
+            logger.error(f"[RAG] Failed to count transcripts: {e}")
+            return 0
+
+    def query_transcripts_filtered(self, filters: Dict[str, Any]) -> Dict[str, Any]:
+        limit = max(1, min(int(filters.get("limit", 20) or 20), 200))
+        offset = max(0, int(filters.get("offset", 0) or 0))
+        context_lines = max(0, min(int(filters.get("context_lines", 3) or 0), 10))
+        search_type = (filters.get("search_type") or "keyword").lower()
+        keywords = [k.strip() for k in str(filters.get("keywords", "")).split(",") if k.strip()]
+        sort_by = (filters.get("sort_by") or "created_at").lower()
+        order = (filters.get("order") or "desc").lower()
+        valid_sort_fields = {"created_at", "speaker", "emotion", "job_id", "start_time"}
+        if sort_by not in valid_sort_fields:
+            sort_by = "created_at"
+        if order not in {"asc", "desc"}:
+            order = "desc"
+        order_sql = "ASC" if order == "asc" else "DESC"
+
+        if keywords and search_type == "semantic":
+            query = ", ".join(keywords)
+            results = self.search_semantic(
+                query=query,
+                top_k=limit,
+                doc_type='transcript_segment',
+                start_date=filters.get('start_date_utc') or filters.get('start_date'),
+                end_date=filters.get('end_date_utc') or filters.get('end_date'),
+                speakers=self._normalize_filter_list(filters.get('speakers')),
+                bias_emotions=self._normalize_filter_list(filters.get('emotions')),
+            ) or []
+            items: List[Dict[str, Any]] = []
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                for result in results:
+                    metadata = result.get('metadata') or {}
+                    transcript_id = metadata.get('transcript_id')
+                    seq = metadata.get('seq')
+                    if transcript_id is None or seq is None:
+                        continue
+                    # Context before
+                    cur.execute(
+                        f"""
+                        SELECT text, speaker, {self.emotion_column} AS emotion
+                        FROM transcript_segments
+                        WHERE transcript_id = ? AND seq < ?
+                        ORDER BY seq DESC
+                        LIMIT ?
+                        """,
+                        (transcript_id, seq, context_lines),
+                    )
+                    context_rows = cur.fetchall()
+                    context = [
+                        {
+                            "speaker": row['speaker'],
+                            "text": self._trim_text(row['text']),
+                            "emotion": row['emotion'],
+                        }
+                        for row in reversed(context_rows)
+                    ] if context_lines else []
+
+                    # Context after
+                    cur.execute(
+                        f"""
+                        SELECT text, speaker, {self.emotion_column} AS emotion
+                        FROM transcript_segments
+                        WHERE transcript_id = ? AND seq > ?
+                        ORDER BY seq ASC
+                        LIMIT ?
+                        """,
+                        (transcript_id, seq, context_lines),
+                    )
+                    after_rows = cur.fetchall()
+                    context_after = [
+                        {
+                            "speaker": row['speaker'],
+                            "text": self._trim_text(row['text']),
+                            "emotion": row['emotion'],
+                        }
+                        for row in after_rows
+                    ] if context_lines else []
+
+                    items.append({
+                        "segment_id": metadata.get('segment_id'),
+                        "transcript_id": transcript_id,
+                        "job_id": metadata.get('job_id'),
+                        "speaker": metadata.get('speaker'),
+                        "emotion": metadata.get('emotion'),
+                        "text": self._trim_text(result.get('text')),
+                        "score": result.get('score'),
+                        "created_at": metadata.get('created_at'),
+                        "start_time": metadata.get('start_time'),
+                        "end_time": metadata.get('end_time'),
+                        "context_before": context,
+                        "context_after": context_after,
+                    })
+                conn.close()
+
+            def _timestamp_value(value: Any) -> float:
+                if value in (None, ""):
+                    return 0.0
+                if isinstance(value, (int, float)):
+                    return float(value)
+                text = str(value)
+                try:
+                    if text.endswith("Z"):
+                        text = text[:-1] + "+00:00"
+                    return datetime.fromisoformat(text).timestamp()
+                except Exception:
+                    return 0.0
+
+            def _sort_key(item: Dict[str, Any]) -> Any:
+                if sort_by == "speaker":
+                    return (item.get("speaker") or "").lower()
+                if sort_by == "emotion":
+                    return (item.get("emotion") or "").lower()
+                if sort_by == "job_id":
+                    return item.get("job_id") or ""
+                if sort_by == "start_time":
+                    return _timestamp_value(item.get("start_time"))
+                return _timestamp_value(item.get("created_at"))
+
+            items.sort(key=_sort_key, reverse=(order == "desc"))
+            total = len(items)
+            return {"items": items, "count": len(items), "total": total}
+
+        conditions, params = self._build_segment_filters(filters)
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        total = self.count_transcripts_filtered(filters)
+
+        # Determine ORDER BY clause safely
+        if sort_by == "speaker":
+            order_by = f"LOWER(ts.speaker) {order_sql}, tr.created_at DESC, ts.seq ASC"
+        elif sort_by == "emotion":
+            order_by = f"LOWER(COALESCE(ts.{self.emotion_column}, '')) {order_sql}, tr.created_at DESC, ts.seq ASC"
+        elif sort_by == "job_id":
+            order_by = f"COALESCE(tr.job_id, '') {order_sql}, tr.created_at DESC, ts.seq ASC"
+        elif sort_by == "start_time":
+            order_by = f"COALESCE(ts.start_time, 0) {order_sql}, tr.created_at DESC, ts.seq ASC"
+        else:  # created_at
+            order_by = f"tr.created_at {order_sql}, ts.seq ASC"
+
+        try:
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                logger.info(
+                    "[RAG] query filters=%s where=%s params=%s limit=%s offset=%s",
+                    {k: filters.get(k) for k in ("limit", "speakers", "emotions", "start_date", "end_date", "keywords", "search_type", "match")},
+                    where_clause,
+                    params,
+                    limit,
+                    offset,
+                )
+                cur.execute(
+                    f"""
+                    SELECT ts.id, ts.text, ts.speaker, ts.{self.emotion_column} AS emotion, ts.emotion_confidence,
+                           ts.transcript_id, ts.seq, ts.start_time, ts.end_time,
+                           tr.job_id, tr.created_at
+                    FROM transcript_segments ts
+                    JOIN transcript_records tr ON ts.transcript_id = tr.id
+                    WHERE {where_clause}
+                    ORDER BY {order_by}
+                    LIMIT ? OFFSET ?
+                    """,
+                    params + [limit, offset],
+                )
+                rows = cur.fetchall()
+
+                items: List[Dict[str, Any]] = []
+                for row in rows:
+                    if context_lines:
+                        # Context before
+                        cur.execute(
+                            f"""
+                            SELECT text, speaker, {self.emotion_column} AS emotion
+                            FROM transcript_segments
+                            WHERE transcript_id = ? AND seq < ?
+                            ORDER BY seq DESC
+                            LIMIT ?
+                            """,
+                            (row['transcript_id'], row['seq'], context_lines),
+                        )
+                        context_rows = cur.fetchall()
+                        context = [
+                            {
+                                "speaker": ctx['speaker'],
+                                "text": self._trim_text(ctx['text']),
+                                "emotion": ctx['emotion'],
+                            }
+                            for ctx in reversed(context_rows)
+                        ]
+                        # Context after
+                        cur.execute(
+                            f"""
+                            SELECT text, speaker, {self.emotion_column} AS emotion
+                            FROM transcript_segments
+                            WHERE transcript_id = ? AND seq > ?
+                            ORDER BY seq ASC
+                            LIMIT ?
+                            """,
+                            (row['transcript_id'], row['seq'], context_lines),
+                        )
+                        after_rows = cur.fetchall()
+                        context_after = [
+                            {
+                                "speaker": ctx['speaker'],
+                                "text": self._trim_text(ctx['text']),
+                                "emotion": ctx['emotion'],
+                            }
+                            for ctx in after_rows
+                        ]
+                    else:
+                        context = []
+                        context_after = []
+
+                    items.append({
+                        "segment_id": row['id'],
+                        "transcript_id": row['transcript_id'],
+                        "job_id": row['job_id'],
+                        "speaker": row['speaker'],
+                        "emotion": row['emotion'],
+                        "emotion_confidence": row.get('emotion_confidence'),
+                        "text": self._trim_text(row['text']),
+                        "created_at": row['created_at'],
+                        "start_time": row['start_time'],
+                        "end_time": row['end_time'],
+                        "context_before": context,
+                        "context_after": context_after,
+                    })
+
+                conn.close()
+
+            logger.info(f"[RAG] query_transcripts_filtered -> {len(items)} items (total={total}) sort_by={sort_by} order={order} limit={limit} offset={offset}")
+            has_more = (offset + len(items)) < total if isinstance(total, int) else (len(items) == limit)
+            next_offset = offset + len(items)
+            return {
+                "items": items,
+                "count": len(items),
+                "total": total,
+                "has_more": bool(has_more),
+                "next_offset": next_offset,
+                "sort_by": sort_by,
+                "order": order,
+            }
+        except Exception as e:
+            logger.error(f"[RAG] Failed to query transcripts: {e}")
+            return {"items": [], "count": 0, "total": 0}
+
+    def get_unique_speakers(self) -> List[str]:
+        """Return sorted list of unique speakers across transcript segments."""
+        try:
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT DISTINCT speaker
+                    FROM transcript_segments
+                    WHERE speaker IS NOT NULL AND speaker != ''
+                    ORDER BY LOWER(speaker) ASC
+                    """
+                )
+                rows = cur.fetchall()
+                conn.close()
+            speakers = [row[0] for row in rows if row[0]]
+            logger.info(f"[RAG] get_unique_speakers -> {len(speakers)} speakers")
+            return speakers
+        except Exception as e:
+            logger.error(f"[RAG] Failed to get speakers: {e}")
+            return []
     
     def _init_faiss_index(self):
         """Initialize or load FAISS index"""
@@ -272,6 +783,318 @@ class RAGService:
         except Exception as e:
             logger.error(f"Failed to initialize FAISS index: {e}")
             self.faiss_index = faiss.IndexFlatIP(self.embedding_dim)
+
+    # ------------------------------------------------------------------
+    # Analysis Artifacts (Analyzer 2.0 persistence layer)
+    # ------------------------------------------------------------------
+
+    def archive_analysis_artifact(
+        self,
+        artifact_id: Optional[str],
+        analysis_id: Optional[str],
+        title: Optional[str],
+        body: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        index_body: bool = False,
+    ) -> str:
+        if not body:
+            raise ValueError("artifact body cannot be empty")
+
+        artifact_id = artifact_id or f"artifact_{uuid.uuid4().hex}"
+        created_at = datetime.utcnow().isoformat() + "Z"
+        meta_json = json.dumps(metadata or {})
+        embedding_blob = None
+        if index_body and os.getenv("RAG_ENABLE_SEMANTIC", "true").lower() in {"1", "true", "yes"}:
+            try:
+                self._ensure_semantic_ready()
+                embedding_blob = self.get_embedding(body[:4000]).tobytes()
+            except Exception as exc:
+                logger.warning(f"[RAG] Artifact embedding skipped: {exc}")
+                embedding_blob = None
+
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO analysis_artifacts
+                (artifact_id, analysis_id, title, body, metadata, embedding, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    analysis_id,
+                    title or "Analyzer Run",
+                    body,
+                    meta_json,
+                    embedding_blob,
+                    created_at,
+                ),
+            )
+            conn.commit()
+            conn.close()
+        logger.info(f"[RAG] Archived analysis artifact {artifact_id} (analysis_id={analysis_id})")
+        try:
+            self._replace_artifact_chunks(artifact_id, body, index_body=index_body)
+        except Exception as exc:
+            logger.warning(f"[RAG] Failed to chunk artifact {artifact_id}: {exc}")
+        return artifact_id
+
+    def _chunk_artifact_body(self, body: str, chunk_chars: int = 900, overlap_chars: int = 150) -> List[str]:
+        text = (body or "").strip()
+        if not text:
+            return []
+        paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+        chunks: List[str] = []
+        buffer = ""
+        for para in paragraphs:
+            candidate = f"{buffer}\n{para}".strip() if buffer else para
+            if len(candidate) > chunk_chars and buffer:
+                chunks.append(buffer.strip())
+                if overlap_chars > 0 and len(buffer) > overlap_chars:
+                    buffer = buffer[-overlap_chars:].strip()
+                else:
+                    buffer = ""
+                candidate = para
+            buffer = candidate
+        if buffer:
+            chunks.append(buffer.strip())
+        return chunks
+
+    def _replace_artifact_chunks(self, artifact_id: str, body: str, index_body: bool = False) -> None:
+        chunks = self._chunk_artifact_body(body)
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        if not chunks:
+            with self.lock:
+                conn = self._connect()
+                cur = conn.cursor()
+                cur.execute("DELETE FROM analysis_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
+                conn.commit()
+                conn.close()
+            return
+
+        semantic_enabled = index_body and os.getenv("RAG_ENABLE_SEMANTIC", "true").lower() in {"1", "true", "yes"}
+        if semantic_enabled:
+            try:
+                self._ensure_semantic_ready()
+            except Exception as exc:
+                logger.warning(f"[RAG] Chunk embedding disabled: {exc}")
+                semantic_enabled = False
+
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM analysis_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
+            for seq, chunk in enumerate(chunks):
+                embedding_blob = None
+                if semantic_enabled:
+                    try:
+                        embedding_blob = self.get_embedding(chunk[:2000]).tobytes()
+                    except Exception as exc:
+                        logger.warning(f"[RAG] Chunk embedding failure (artifact={artifact_id} seq={seq}): {exc}")
+                        embedding_blob = None
+                cur.execute(
+                    """
+                    INSERT INTO analysis_artifact_chunks
+                    (artifact_id, seq, chunk_text, token_estimate, embedding, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        artifact_id,
+                        seq,
+                        chunk,
+                        len(chunk.split()),
+                        embedding_blob,
+                        timestamp,
+                    ),
+                )
+            conn.commit()
+            conn.close()
+
+    def list_artifact_chunks(self, artifact_id: str, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+        if not artifact_id:
+            return {"items": [], "count": 0, "has_more": False}
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, seq, chunk_text, token_estimate, created_at
+                FROM analysis_artifact_chunks
+                WHERE artifact_id = ?
+                ORDER BY seq ASC
+                LIMIT ? OFFSET ?
+                """,
+                (artifact_id, limit, offset),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        items = [
+            {
+                "chunk_id": row[0],
+                "seq": row[1],
+                "text": row[2],
+                "token_estimate": row[3],
+                "created_at": row[4],
+            }
+            for row in rows
+        ]
+        return {"items": items, "count": len(items), "has_more": len(items) == limit, "next_offset": offset + len(items)}
+
+    def search_artifact_chunks(
+        self,
+        query: str,
+        artifact_ids: Optional[List[str]] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        if not query:
+            return []
+        limit = max(1, min(int(limit), 100))
+        token = f"%{self._escape_like(query.lower())}%"
+        params: List[Any] = []
+        where = ["LOWER(chunk_text) LIKE ? ESCAPE '\\\\'"]
+        params.append(token)
+        if artifact_ids:
+            placeholders = ",".join(["?"] * len(artifact_ids))
+            where.append(f"artifact_id IN ({placeholders})")
+            params.extend(artifact_ids)
+        query_sql = f"""
+            SELECT artifact_id, seq, chunk_text, substr(chunk_text, 1, 600) AS preview, created_at
+            FROM analysis_artifact_chunks
+            WHERE {' AND '.join(where)}
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute(query_sql, params)
+            rows = cur.fetchall()
+            conn.close()
+        return [
+            {
+                "artifact_id": row[0],
+                "seq": row[1],
+                "text": row[2],
+                "preview": row[3],
+                "created_at": row[4],
+            }
+            for row in rows
+        ]
+
+    def list_analysis_artifacts(self, limit: int = 50, offset: int = 0, user_id: Optional[str] = None) -> Dict[str, Any]:
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        logger.info('[RAG] list_analysis_artifacts limit=%s offset=%s user_id=%s', limit, offset, user_id)
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            if user_id:
+                cur.execute(
+                    """
+                    SELECT artifact_id, analysis_id, title, created_at, LENGTH(body) AS size, metadata
+                    FROM analysis_artifacts
+                    WHERE json_extract(metadata, '$.user_id') = ? OR json_type(metadata, '$.user_id') IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (user_id, limit, offset),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT artifact_id, analysis_id, title, created_at, LENGTH(body) AS size, metadata
+                    FROM analysis_artifacts
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit, offset),
+                )
+            rows = cur.fetchall()
+            conn.close()
+        items = []
+        for row in rows:
+            items.append(
+                {
+                    "artifact_id": row[0],
+                    "analysis_id": row[1],
+                    "title": row[2],
+                    "created_at": row[3],
+                    "size": row[4] or 0,
+                    "metadata": json.loads(row[5]) if row[5] else {},
+                }
+            )
+        has_more = len(items) == limit
+        logger.info('[RAG] list_analysis_artifacts -> %s items (has_more=%s)', len(items), has_more)
+        return {"items": items, "count": len(items), "has_more": has_more, "next_offset": offset + len(items)}
+
+    def get_analysis_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
+        if not artifact_id:
+            return None
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT artifact_id, analysis_id, title, body, metadata, created_at
+                FROM analysis_artifacts
+                WHERE artifact_id = ?
+                """,
+                (artifact_id,),
+            )
+            row = cur.fetchone()
+            conn.close()
+        if not row:
+            return None
+        return {
+            "artifact_id": row[0],
+            "analysis_id": row[1],
+            "title": row[2],
+            "body": row[3],
+            "metadata": json.loads(row[4]) if row[4] else {},
+            "created_at": row[5],
+        }
+
+    def search_analysis_artifacts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not query:
+            return []
+        limit = max(1, min(int(limit), 100))
+        token = f"%{self._escape_like(query.lower())}%"
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT artifact_id, title, substr(body, 1, 600) AS preview, created_at
+                FROM analysis_artifacts
+                WHERE LOWER(title) LIKE ? ESCAPE '\\' OR LOWER(body) LIKE ? ESCAPE '\\'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (token, token, limit),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        return [
+            {
+                "artifact_id": row[0],
+                "title": row[1],
+                "preview": row[2],
+                "created_at": row[3],
+            }
+            for row in rows
+        ]
+
+    def _ensure_semantic_ready(self):
+        """Lazy init embeddings + FAISS and load data into index."""
+        if self.embedding_model is None:
+            self._init_embedding_model()
+        if self.faiss_index is None:
+            self._init_faiss_index()
+            self._load_existing_data()
     
     def _load_existing_data(self):
         """Load existing segments/memories from database into FAISS"""
@@ -403,13 +1226,22 @@ class RAGService:
                 
                 # Store segments and index in FAISS
                 embeddings_to_add = []
+                last_end_by_speaker: Dict[str, float] = {}
                 for idx, seg in enumerate(segments):
                     doc_id = f"seg_{job_id}_{idx}_{uuid.uuid4().hex[:8]}"
                     text = seg.get('text', '')
+                    emotion_value = seg.get('emotion', seg.get('dominant_emotion'))
+                    features = self._compute_segment_features(seg, last_end_by_speaker)
                     
-                    # Generate embedding
-                    embedding = self.get_embedding(text)
-                    embeddings_to_add.append(embedding)
+                    # Generate embedding only if semantics enabled
+                    embedding = None
+                    if os.getenv("RAG_ENABLE_SEMANTIC", "true").lower() in {"1", "true", "yes"}:
+                        try:
+                            self._ensure_semantic_ready()
+                            embedding = self.get_embedding(text)
+                            embeddings_to_add.append(embedding)
+                        except Exception as _e:
+                            logger.warning(f"[RAG] Embedding generation skipped: {_e}")
                     
                     # Store in document store
                     self.document_store[doc_id] = {
@@ -422,20 +1254,30 @@ class RAGService:
                         'speaker': seg.get('speaker'),
                         'start_time': seg.get('start_time'),
                         'end_time': seg.get('end_time'),
-                        'emotion': seg.get('emotion'),
+                        'emotion': emotion_value,
                         'emotion_confidence': seg.get('emotion_confidence'),
                         'emotion_scores': seg.get('emotion_scores'),
                         'audio_metrics': seg.get('audio_metrics'),
+                        'word_count': features["word_count"],
+                        'filler_count': features["filler_count"],
+                        'pace_wpm': features["pace_wpm"],
+                        'pause_ms': features["pause_ms"],
+                        'pitch_mean': features["pitch_mean"],
+                        'pitch_std': features["pitch_std"],
+                        'volume_rms': features["volume_rms"],
+                        'volume_peak': features["volume_peak"],
                         'created_at': timestamp
                     }
                     
                     # Store in database
-                    cur.execute("""
+                    cur.execute(f"""
                         INSERT INTO transcript_segments
                         (transcript_id, seq, text, speaker, start_time, end_time,
-                         speaker_confidence, emotion, emotion_confidence, emotion_scores,
-                         audio_metrics, embedding, doc_id, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         speaker_confidence, {self.emotion_column}, emotion_confidence, emotion_scores,
+                         audio_metrics, embedding, doc_id, created_at,
+                         word_count, filler_count, pace_wpm, pause_ms,
+                         pitch_mean, pitch_std, volume_rms, volume_peak)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         transcript_id,
                         idx,
@@ -444,13 +1286,21 @@ class RAGService:
                         seg.get('start_time'),
                         seg.get('end_time'),
                         seg.get('speaker_confidence'),
-                        seg.get('emotion'),
+                        emotion_value,
                         seg.get('emotion_confidence'),
                         json.dumps(seg.get('emotion_scores')) if seg.get('emotion_scores') else None,
                         json.dumps(seg.get('audio_metrics')) if seg.get('audio_metrics') else None,
-                        embedding.tobytes(),
+                        (embedding.tobytes() if embedding is not None else None),
                         doc_id,
-                        timestamp
+                        timestamp,
+                        features["word_count"],
+                        features["filler_count"],
+                        features["pace_wpm"],
+                        features["pause_ms"],
+                        features["pitch_mean"],
+                        features["pitch_std"],
+                        features["volume_rms"],
+                        features["volume_peak"],
                     ))
                 
                 # Add all embeddings to FAISS
@@ -460,13 +1310,13 @@ class RAGService:
                     logger.info(f"Indexed {len(embeddings_to_add)} segments for job {job_id}")
                 
                 conn.commit()
-                conn.close()
-                
-                # Save FAISS index
-                self._save_faiss_index()
-                
-                logger.info(f"Transcript {job_id} indexed successfully (transcript_id={transcript_id})")
-                return transcript_id
+            conn.close()
+
+            # Save FAISS index
+            self._save_faiss_index()
+
+            logger.info(f"Transcript {job_id} indexed successfully (transcript_id={transcript_id})")
+            return transcript_id
                 
             except Exception as e:
                 logger.error(f"Failed to index transcript: {e}")
@@ -475,6 +1325,75 @@ class RAGService:
                 conn.rollback()
                 conn.close()
                 raise
+
+    def _ensure_segment_column_extensions(self, cursor: sqlite3.Cursor) -> None:
+        """Ensure extended analytics columns exist on transcript_segments table."""
+        cursor.execute("PRAGMA table_info(transcript_segments)")
+        existing = {row["name"] for row in cursor.fetchall()}
+        columns_to_add = [
+            ("word_count", "INTEGER"),
+            ("filler_count", "INTEGER"),
+            ("pace_wpm", "REAL"),
+            ("pause_ms", "REAL"),
+            ("pitch_mean", "REAL"),
+            ("pitch_std", "REAL"),
+            ("volume_rms", "REAL"),
+            ("volume_peak", "REAL"),
+        ]
+        for name, decl in columns_to_add:
+            if name not in existing:
+                cursor.execute(f"ALTER TABLE transcript_segments ADD COLUMN {name} {decl}")
+
+    def _compute_segment_features(
+        self,
+        segment: Dict[str, Any],
+        last_end_by_speaker: Dict[str, float],
+    ) -> Dict[str, Optional[float]]:
+        """Derive speech metrics for a segment."""
+        text = segment.get("text") or ""
+        tokens = WORD_REGEX.findall(text)
+        word_count = len(tokens)
+        filler_count = 0
+        lowered = text.lower()
+        for pattern in FILLER_PATTERNS:
+            matches = pattern.findall(lowered)
+            filler_count += len(matches)
+
+        start_time = segment.get("start_time")
+        end_time = segment.get("end_time")
+        pace_wpm = None
+        if isinstance(start_time, (int, float)) and isinstance(end_time, (int, float)):
+            duration = max(0.0, end_time - start_time)
+            if duration > 0:
+                pace_wpm = (word_count / duration) * 60.0
+
+        pause_ms = None
+        speaker = segment.get("speaker")
+        if speaker:
+            prev_end = last_end_by_speaker.get(speaker)
+            if prev_end is not None and isinstance(start_time, (int, float)):
+                delta = (start_time - prev_end) * 1000.0
+                if delta > 0:
+                    pause_ms = delta
+            if isinstance(end_time, (int, float)):
+                last_end_by_speaker[speaker] = end_time
+
+        audio_metrics = segment.get("audio_metrics") or {}
+        pitch_mean = audio_metrics.get("pitch_mean") or segment.get("pitch_mean")
+        pitch_std = audio_metrics.get("pitch_std") or segment.get("pitch_std")
+        volume_rms = audio_metrics.get("volume_rms") or audio_metrics.get("rms")
+        volume_peak = audio_metrics.get("volume_peak") or audio_metrics.get("peak")
+
+        return {
+            "word_count": word_count,
+            "filler_count": filler_count,
+            "pace_wpm": pace_wpm,
+            "pause_ms": pause_ms,
+            "pitch_mean": pitch_mean,
+            "pitch_std": pitch_std,
+            "volume_rms": volume_rms,
+            "volume_peak": volume_peak,
+        }
     
     def search_semantic(
         self,
@@ -499,7 +1418,12 @@ class RAGService:
             List of results with text, metadata, and similarity score
         """
         try:
-            # Generate query embedding
+            # Semantic search can be disabled via env for speed
+            if os.getenv("RAG_ENABLE_SEMANTIC", "true").lower() not in {"1", "true", "yes"}:
+                logger.warning("[RAG] Semantic search requested but disabled; returning empty list")
+                return []
+            # Ensure model/index ready, then embed
+            self._ensure_semantic_ready()
             query_embedding = self.get_embedding(query)
             
             # Search FAISS index (get more candidates for filtering)
@@ -759,9 +1683,11 @@ class RAGService:
             results = []
             for rec in records:
                 # Get segments for this transcript
-                cur.execute("""
-                    SELECT speaker, emotion, text, emotion_confidence, 
-                           emotion_scores, start_time, end_time
+                cur.execute(f"""
+                    SELECT speaker, {self.emotion_column} AS emotion, text, emotion_confidence, 
+                           emotion_scores, start_time, end_time,
+                           word_count, filler_count, pace_wpm, pause_ms,
+                           pitch_mean, pitch_std, volume_rms, volume_peak
                     FROM transcript_segments 
                     WHERE transcript_id = ? 
                     ORDER BY seq
@@ -790,13 +1716,22 @@ class RAGService:
                             'text': seg['text'],
                             'emotion_confidence': seg['emotion_confidence'],
                             'start_time': seg['start_time'],
-                            'end_time': seg['end_time']
+                            'end_time': seg['end_time'],
+                            'word_count': seg['word_count'],
+                            'filler_count': seg['filler_count'],
+                            'pace_wpm': seg['pace_wpm'],
+                            'pause_ms': seg['pause_ms'],
+                            'pitch_mean': seg['pitch_mean'],
+                            'pitch_std': seg['pitch_std'],
+                            'volume_rms': seg['volume_rms'],
+                            'volume_peak': seg['volume_peak'],
                         }
                         for seg in segments
                     ]
                 })
             
             conn.close()
+            logger.info("[RAG] get_recent_transcripts -> %s transcripts (limit=%s)", len(results), limit)
             return results
         except Exception as e:
             logger.error(f"Failed to get recent transcripts: {e}")
@@ -812,7 +1747,7 @@ class RAGService:
             conn = self._connect()
             cur = conn.cursor()
 
-            conditions = ["ts.emotion IS NOT NULL", "ts.emotion != ''"]
+            conditions = [f"ts.{self.emotion_column} IS NOT NULL", f"ts.{self.emotion_column} != ''"]
             params: List[Any] = []
 
             if start_date:
@@ -828,11 +1763,11 @@ class RAGService:
 
             cur.execute(
                 f"""
-                SELECT ts.emotion AS emotion, COUNT(*) AS count
+                SELECT ts.{self.emotion_column} AS emotion, COUNT(*) AS count
                 FROM transcript_segments ts
                 JOIN transcript_records tr ON ts.transcript_id = tr.id
                 WHERE {where_clause}
-                GROUP BY ts.emotion
+                GROUP BY ts.{self.emotion_column}
                 ORDER BY count DESC
                 """,
                 params,
@@ -840,6 +1775,35 @@ class RAGService:
             rows = cur.fetchall()
 
             total_analyzed = sum(row["count"] for row in rows)
+
+            # Build per-day trend data within the requested window
+            params_for_timeline = list(params)
+            cur.execute(
+                f"""
+                SELECT date(tr.created_at) AS day, ts.{self.emotion_column} AS emotion, COUNT(*) AS count
+                FROM transcript_segments ts
+                JOIN transcript_records tr ON ts.transcript_id = tr.id
+                WHERE {where_clause}
+                GROUP BY day, ts.{self.emotion_column}
+                ORDER BY day ASC
+                """,
+                params_for_timeline,
+            )
+            trend_rows = cur.fetchall()
+
+            timeline_map: Dict[str, Dict[str, int]] = {}
+            for row in trend_rows:
+                day = row.get("day")
+                emotion = row.get("emotion")
+                if not day or not emotion:
+                    continue
+                day_map = timeline_map.setdefault(day, {})
+                day_map[emotion] = row["count"]
+
+            timeline = [
+                {"date": day, "counts": counts}
+                for day, counts in sorted(timeline_map.items(), key=lambda item: item[0])
+            ]
 
             conn.close()
 
@@ -849,10 +1813,11 @@ class RAGService:
                     {"emotion": row["emotion"], "count": row["count"]}
                     for row in rows
                 ],
+                "timeline": timeline,
             }
         except Exception as e:
             logger.error(f"[RAG] Failed to compute emotion stats: {e}")
-            return {"total_analyzed": 0, "emotions": []}
+            return {"total_analyzed": 0, "emotions": [], "timeline": []}
     
     def list_memories(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """List all memories with pagination"""
@@ -1170,12 +2135,162 @@ def get_recent_transcripts(
         raise HTTPException(status_code=503, detail="RAG service not initialized")
     
     transcripts = rag_service.get_recent_transcripts(limit=limit)
+    logger.info("[RAG] /transcripts/recent API -> %s transcripts (limit=%s)", len(transcripts), limit)
     
     return {
         "success": True,
         "transcripts": transcripts,
         "count": len(transcripts)
     }
+
+
+@app.get("/transcripts/speakers")
+def get_transcript_speakers():
+    """Return list of unique speakers for filter dropdowns."""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+
+    try:
+        speakers = rag_service.get_unique_speakers()
+        return {"success": True, "speakers": speakers}
+    except Exception as e:
+        logger.error(f"[RAG] get_transcript_speakers failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load speakers")
+
+
+@app.post("/transcripts/count")
+def count_transcripts_endpoint(request: Dict[str, Any]):
+    """Count transcript segments matching filters."""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+
+    filters = request or {}
+    try:
+        count = rag_service.count_transcripts_filtered(filters)
+        return {"success": True, "count": count}
+    except Exception as e:
+        logger.error(f"[RAG] count_transcripts_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to count transcripts")
+
+
+@app.post("/transcripts/query")
+def query_transcripts_endpoint(request: Dict[str, Any]):
+    """Query transcript segments with context for Gemma analyzer."""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+
+    filters = request or {}
+    try:
+        result = rag_service.query_transcripts_filtered(filters)
+        payload = {"success": True}
+        payload.update(result)
+        return payload
+    except Exception as e:
+        logger.error(f"[RAG] query_transcripts_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to query transcripts")
+
+
+# ============================================================================
+# Analysis Artifact Endpoints
+# ============================================================================
+
+
+@app.post("/analysis/archive")
+def archive_analysis_endpoint(request: Dict[str, Any]):
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+
+    body = request.get("body")
+    if not body:
+        raise HTTPException(status_code=400, detail="Artifact body required")
+
+    try:
+        artifact_id = rag_service.archive_analysis_artifact(
+            artifact_id=request.get("artifact_id"),
+            analysis_id=request.get("analysis_id"),
+            title=request.get("title"),
+            body=body,
+            metadata=request.get("metadata"),
+            index_body=bool(request.get("index")),
+        )
+        return {"success": True, "artifact_id": artifact_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[RAG] archive_analysis_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to archive artifact")
+
+
+@app.get("/analysis/list")
+def list_analysis_endpoint(limit: int = 50, offset: int = 0, user_id: Optional[str] = None):
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    try:
+        result = rag_service.list_analysis_artifacts(limit=limit, offset=offset, user_id=user_id)
+        return {"success": True, **result}
+    except Exception as e:
+        logger.error(f"[RAG] list_analysis_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list artifacts")
+
+
+@app.get("/analysis/{artifact_id}")
+def get_analysis_endpoint(artifact_id: str):
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    try:
+        artifact = rag_service.get_analysis_artifact(artifact_id)
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        return {"success": True, "artifact": artifact}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[RAG] get_analysis_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load artifact")
+
+
+@app.post("/analysis/search")
+def search_analysis_endpoint(request: Dict[str, Any]):
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    query = (request or {}).get("query", "").strip()
+    if not query:
+        return {"success": True, "items": []}
+    try:
+        items = rag_service.search_analysis_artifacts(query=query, limit=request.get("limit", 20))
+        return {"success": True, "items": items}
+    except Exception as e:
+        logger.error(f"[RAG] search_analysis_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to search artifacts")
+
+
+@app.get("/analysis/{artifact_id}/chunks")
+def list_artifact_chunks_endpoint(artifact_id: str, limit: int = 20, offset: int = 0):
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    try:
+        result = rag_service.list_artifact_chunks(artifact_id, limit=limit, offset=offset)
+        return {"success": True, **result}
+    except Exception as e:
+        logger.error(f"[RAG] list_artifact_chunks_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list chunks")
+
+
+@app.post("/analysis/chunks/search")
+def search_artifact_chunks_endpoint(request: Dict[str, Any]):
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+    query = (request or {}).get("query", "").strip()
+    if not query:
+        return {"success": True, "items": []}
+    artifact_ids = request.get("artifact_ids")
+    limit = max(1, min(int(request.get("limit", 20) or 20), 100))
+    try:
+        items = rag_service.search_artifact_chunks(query, artifact_ids=artifact_ids, limit=limit)
+        return {"success": True, "items": items}
+    except Exception as e:
+        logger.error(f"[RAG] search_artifact_chunks_endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to search chunks")
 
 # ============================================================================
 # Memory Endpoints

@@ -20,8 +20,9 @@ WORKDIR /app
 COPY services/rag-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy service code
-COPY services/rag-service/src/ .
+# Copy service code into /app/src to match docker-compose volume mount
+RUN mkdir -p /app/src
+COPY services/rag-service/src/ /app/src/
 
 # Copy shared modules
 COPY shared /app/shared
@@ -36,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 EXPOSE 8004
 
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8004"]
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8004"]

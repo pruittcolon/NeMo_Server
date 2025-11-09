@@ -29,7 +29,13 @@ class SecurityConfig:
     
     # Session settings
     SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "ws_session")
-    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() == "true"
+    # Derive a safer default for local/dev when not explicitly provided.
+    if "SESSION_COOKIE_SECURE" in os.environ:
+        SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "true").lower() == "true"
+    else:
+        app_env = os.getenv("APP_ENV", "").lower()
+        # In dev/local environments, default to False so http:// origins can set cookies.
+        SESSION_COOKIE_SECURE = False if app_env in {"dev", "local", "development"} else True
     SESSION_DURATION_SECONDS = int(os.getenv("SESSION_DURATION_SECONDS", "86400"))  # 24 hours
     
     # Audit settings
@@ -92,4 +98,4 @@ class ServiceConfig:
     TRANSCRIPTION_SERVICE_URL = os.getenv("TRANSCRIPTION_SERVICE_URL", "http://transcription-service:8003")
     EMOTION_SERVICE_URL = os.getenv("EMOTION_SERVICE_URL", "http://emotion-service:8005")
     API_SERVICE_URL = os.getenv("API_SERVICE_URL", "http://api-service:8000")
-
+    INSIGHTS_SERVICE_URL = os.getenv("INSIGHTS_URL", "http://insights-service:8010")

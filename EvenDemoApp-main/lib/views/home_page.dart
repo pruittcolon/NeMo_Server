@@ -152,6 +152,18 @@ class _HomePageState extends State<HomePage> {
                   );
                 },
               ),
+              const SizedBox(height: 12),
+              _StyledFeatureCard(
+                icon: Icons.camera_alt,
+                title: 'Vision Exam Mode',
+                subtitle: 'Take photos of exam questions and get instant answers.',
+                highlight: true,
+                onTap: () async {
+                  print("🎯 [DEBUG] Vision Exam Mode button pressed");
+                  // Directly start vision mode
+                  await EvenAI.get.startVisionMode();
+                },
+              ),
               Expanded(
                   child: BleManager.get().isConnected
                       ? _ActiveSessionView(

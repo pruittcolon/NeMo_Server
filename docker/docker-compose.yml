@@ -193,13 +193,24 @@ services:
       RAG_URL: http://rag-service:8004
       EMOTION_URL: http://emotion-service:8005
       TRANSCRIPTION_URL: http://transcription-service:8003
+      INSIGHTS_URL: http://insights-service:8010
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_DEFAULT: "1000"
+      RATE_LIMIT_WINDOW_SEC: "60"
       ENABLE_DEMO_USERS: "true"
       ALLOWED_ORIGINS: "http://127.0.0.1,http://localhost"
       SESSION_COOKIE_SECURE: "false"
       SESSION_COOKIE_SAMESITE: "lax"
+      # Disable canonical host redirects in dev to avoid host/IP mismatches
+      CANONICAL_HOST: ""
+      # Relax login rate limiting for local dev (still enforced, just higher thresholds)
+      LOGIN_RATE_LIMIT_WINDOW: "60"
+      LOGIN_RATE_LIMIT_LIMIT: "1000"
     volumes:
       - ./gateway_instance:/app/instance
       - ./secrets:/run/secrets:ro
+      # Mount local frontend for live UI updates in dev (read-only)
+      - ../frontend:/app/frontend:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -250,6 +261,7 @@ services:
       - ./rag_instance:/app/instance
       - ./faiss_index:/app/faiss_index
       - ../models:/app/models
+      - ../shared:/app/shared
       - ./secrets:/run/secrets:ro
     # Phase 4: Remove host port mapping - internal only
     # ports:
@@ -264,6 +276,27 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - nemo_network
+
+  # ============================================================================
+  # Insights / Analytics Service
+  # ============================================================================
+
+  insights-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.insights
+    container_name: refactored_insights
+    restart: unless-stopped
+    environment:
+      INSIGHTS_DB_PATH: /app/instance/rag.db
+    volumes:
+      - ./rag_instance:/app/instance:ro
+      - ../shared:/app/shared
+    depends_on:
+      rag-service:
+        condition: service_healthy
     networks:
       - nemo_network
   

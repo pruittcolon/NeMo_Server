@@ -10,7 +10,7 @@ from typing import Optional, List
 from .auth_manager import get_auth_manager, UserRole
 from .permissions import require_auth, require_admin, get_current_user
 from src.audit.audit_logger import get_audit_logger
-from src import config
+from src.config import SecurityConfig as SecConf
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -80,19 +80,19 @@ async def login(request: LoginRequest, req: Request, response: Response):
     # Set httpOnly cookie
     max_age = 2592000 if request.remember_me else 86400  # 30 days vs 24 hours
     response.set_cookie(
-        key="ws_session",
+        key=SecConf.SESSION_COOKIE_NAME,
         value=session_token,
         httponly=True,
-        secure=config.SESSION_COOKIE_SECURE,
-        samesite="lax",
+        secure=SecConf.SESSION_COOKIE_SECURE,
+        samesite=getattr(SecConf, "SESSION_COOKIE_SAMESITE", "lax"),
         max_age=max_age
     )
     response.set_cookie(
-        key=config.CSRF_COOKIE_NAME,
+        key=SecConf.CSRF_COOKIE_NAME,
         value=csrf_token,
         httponly=False,
-        secure=config.SESSION_COOKIE_SECURE,
-        samesite="lax",
+        secure=SecConf.SESSION_COOKIE_SECURE,
+        samesite=getattr(SecConf, "SESSION_COOKIE_SAMESITE", "lax"),
         max_age=max_age
     )
     
@@ -140,8 +140,8 @@ async def logout(req: Request, response: Response, ws_session: Optional[str] = C
             )
         auth_manager.logout(ws_session)
     
-    response.delete_cookie(key="ws_session")
-    response.delete_cookie(key=config.CSRF_COOKIE_NAME)
+    response.delete_cookie(key=SecConf.SESSION_COOKIE_NAME)
+    response.delete_cookie(key=SecConf.CSRF_COOKIE_NAME)
     return {"success": True, "message": "Logged out"}
 
 @router.get("/user")

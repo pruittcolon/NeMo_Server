@@ -3,24 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: https:;">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="DENY">
   <title>Nemo Server - Gemma AI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   
   <script src="https://unpkg.com/lucide@latest"></script>
   
-  <link rel="stylesheet" href="assets/css/main.css">
-  <link rel="stylesheet" href="assets/css/components.css">
-  <link rel="stylesheet" href="assets/css/animations.css">
+  <link rel="stylesheet" href="assets/css/main.css?v=2024110802">
+  <link rel="stylesheet" href="assets/css/design-tokens.css?v=2024110802">
+  <link rel="stylesheet" href="assets/css/components.css?v=2024110802">
+  <link rel="stylesheet" href="assets/css/animations.css?v=2024110802">
+  <link rel="stylesheet" href="assets/css/analyzer.css?v=2024110802">
   
   <script>
-    window.__ASSET_VERSION__ = window.__ASSET_VERSION__ || '2024110101';
+    window.__ASSET_VERSION__ = '2024110802';
   </script>
   <script src="assets/js/api.js?v=2024110101"></script>
   <script src="assets/js/app.js?v=2024110101"></script>
   <script src="assets/js/auth.js?v=2024110101"></script>
+  <script src="assets/js/gemma_analyzer_ui.js?v=2024110802"></script>
   
   <style>
     .chat-container {
@@ -79,9 +85,30 @@
       border-top: 1px solid var(--glass-border);
       padding: 1.5rem;
     }
+    
+    /* Date range button styles */
+    .date-range-btn {
+      transition: all 0.2s ease;
+    }
+    .date-range-btn.active {
+      background: var(--primary) !important;
+      color: white !important;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+    }
+    .date-range-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    /* Pulse animation for count */
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+      100% { transform: scale(1); }
+    }
   </style>
 </head>
-<body>
+<body class="gemma-theme">
   
   <header class="glass-header">
     <div class="container">
@@ -116,6 +143,7 @@
   </header>
 
   <main class="container" style="padding-top: 2rem; padding-bottom: 2rem;">
+    <div class="gemma-shell">
     
     <section class="fade-in-up" style="text-align: center; margin-bottom: 2rem;">
       <h1 style="font-size: 2.5rem; margin-bottom: 1rem;">Gemma AI Insights</h1>
@@ -123,7 +151,7 @@
     </section>
 
     <!-- Stats -->
-    <section class="grid grid-3 fade-in-up delay-100" style="margin-bottom: 2rem;">
+    <section class="grid grid-3 fade-in-up delay-100 gemma-hero-stats" style="margin-bottom: 2rem;">
       <div class="stat-card">
         <i data-lucide="cpu" style="width: 28px; height: 28px; color: var(--primary); margin-bottom: 0.5rem;"></i>
         <div class="stat-value">Gemma 3 4B</div>
@@ -143,81 +171,30 @@
       </div>
     </section>
 
-    <!-- Chat Interface -->
-    <section class="fade-in-up delay-200">
-      <div class="glass-card" style="padding: 0;">
-        <div class="chat-container">
-          <div class="chat-controls" style="padding: 1rem; border-bottom: 1px solid var(--glass-border); display: flex; flex-wrap: wrap; gap: 1rem;">
-            <div style="flex: 1 1 200px;">
-              <label style="display: block; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.25rem; color: var(--text-tertiary);">
-                Transcript Range
-              </label>
-              <select id="context-range" class="input" style="padding: 0.5rem 0.75rem;">
-                <option value="25">Last 25 transcriptions</option>
-                <option value="50" selected>Last 50 transcriptions</option>
-                <option value="100">Last 100 transcriptions</option>
-                <option value="0">All time</option>
-              </select>
-            </div>
-            <div style="flex: 1 1 200px;">
-              <label style="display: block; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.25rem; color: var(--text-tertiary);">
-                Emotion Focus
-              </label>
-              <select id="emotion-bias" class="input" style="padding: 0.5rem 0.75rem;">
-                <option value="none" selected>All conversations</option>
-                <option value="conflict">Conflicts & arguments</option>
-                <option value="joy">Positive highlights</option>
-              </select>
-            </div>
-            <div style="display: flex; align-items: flex-end;">
-              <label style="display: flex; align-items: center; gap: 0.5rem;">
-                <input type="checkbox" id="include-memories">
-                Include memory notes
-              </label>
-            </div>
-          </div>
-          <div class="chat-messages" id="chat-messages">
-            <!-- Welcome message -->
-            <div class="chat-message ai">
-              <div class="chat-avatar ai">
-                <i data-lucide="sparkles" style="width: 20px; height: 20px; color: white;"></i>
-              </div>
-              <div class="chat-bubble ai">
-                <strong>Gemma AI</strong>
-                <p style="margin-top: 0.5rem;">Hello! I'm your AI assistant powered by Gemma 3 4B. I can help you with:</p>
-                <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
-                  <li>Conversation summaries</li>
-                  <li>Personality analysis</li>
-                  <li>Pattern detection</li>
-                  <li>Emotional insights</li>
-                </ul>
-                <p style="margin-bottom: 0;">Ask me anything about your transcripts!</p>
-              </div>
-            </div>
-          </div>
-          
-          <div class="chat-input-container">
-            <form id="chat-form" style="display: flex; gap: 1rem;">
-              <input 
-                type="text" 
-                class="input" 
-                id="chat-input" 
-                placeholder="Ask Gemma AI anything..."
-                style="flex: 1;"
-                autocomplete="off"
-              >
-              <button type="submit" class="btn btn-primary" id="send-btn">
-                <i data-lucide="send" style="width: 18px; height: 18px;"></i>
-                Send
-              </button>
-            </form>
-          </div>
+    <!-- Chat Interface removed; use analyzer chat drawer (bottom/overlay) to avoid cramped layout. -->
+
+    <!-- Advanced Analysis Section -->
+    <section class="fade-in-up delay-300" style="margin-top: 2rem;">
+      <div class="glass-card">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; cursor: pointer;" onclick="toggleAdvancedAnalysis()">
+          <h3 style="margin: 0; display: flex; align-items: center; gap: 0.75rem;">
+            <i data-lucide="brain" style="width: 24px; height: 24px; color: var(--primary);"></i>
+            Advanced Conversation Analysis
+          </h3>
+          <i data-lucide="chevron-down" id="analysis-toggle-icon" style="width: 20px; height: 20px; transition: transform 0.3s;"></i>
         </div>
+        
+        <div id="advanced-analysis-content" style="display: block;">
+          <p class="text-muted" style="margin-bottom: 1.5rem;">
+            Analyze conversations for patterns, fallacies, emotional triggers. Customize the analysis prompt and filters.
+          </p>
+          <div id="gemma-advanced-analyzer"></div>
+        </div></div>
       </div>
     </section>
 
     <!-- Quick Actions -->
-    <section class="grid grid-2 fade-in-up delay-300" style="margin-top: 2rem;">
+    <section class="grid grid-2 fade-in-up delay-300 gemma-quick-actions" style="margin-top: 2rem;">
       <div class="glass-card">
         <h4 style="margin-bottom: 1rem;">Quick Actions</h4>
         <div style="display: flex; flex-direction: column; gap: 0.5rem;">
@@ -247,174 +224,36 @@
       </div>
     </section>
 
+    </div>
   </main>
 
   <script>
     lucide.createIcons();
 
-    const chatMessages = document.getElementById('chat-messages');
-    const chatForm = document.getElementById('chat-form');
-    const chatInput = document.getElementById('chat-input');
-    const sendBtn = document.getElementById('send-btn');
-    const rangeSelect = document.getElementById('context-range');
-    const emotionBiasSelect = document.getElementById('emotion-bias');
-    const includeMemoriesToggle = document.getElementById('include-memories');
-
-    function buildRagPayload(message) {
-      const payload = {
-        query: message,
-        max_tokens: 400,
-        temperature: 0.7,
-        top_p: 0.9,
-        top_k_results: 8,
-      };
-
-      const lastN = parseInt(rangeSelect.value, 10);
-      if (Number.isFinite(lastN) && lastN > 0) {
-        payload.last_n_transcripts = lastN;
-      }
-
-      const bias = emotionBiasSelect.value;
-      if (bias === 'conflict') {
-        payload.bias_emotions = ['anger', 'sadness', 'fear'];
-      } else if (bias === 'joy') {
-        payload.bias_emotions = ['joy', 'surprise'];
-      }
-
-      if (includeMemoriesToggle.checked) {
-        payload.use_memories = true;
-        payload.include_memories_top_k = 3;
-      }
-
-      return payload;
-    }
-
-    function viewTranscript(jobId, startSeconds) {
-      if (!jobId) return;
-      const timestamp = typeof startSeconds === 'number' && !Number.isNaN(startSeconds)
-        ? `&t=${Math.max(0, Math.floor(startSeconds))}`
-        : '';
-      window.location.href = `transcripts.html?job=${encodeURIComponent(jobId)}${timestamp}`;
-    }
-    window.viewTranscript = viewTranscript;
-
-    chatForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const message = chatInput.value.trim();
-      if (!message) return;
-
-      addMessage('user', message);
-      chatInput.value = '';
-
-      sendBtn.disabled = true;
-      sendBtn.innerHTML = '<div class="loading"></div> Warming up GPU...';
-
-      try {
-        console.debug('🔥 [GEMMA] Warming up Gemma on GPU...', { message });
-        const warmup = await api.gemmaWarmup();
-        if (!warmup || warmup.status === 'error') {
-          throw new Error(warmup?.message || 'Warmup failed');
-        }
-        console.debug('✅ [GEMMA] Warmup complete', warmup);
-        if (warmup.warning) {
-          addMessage('ai', `⚠️ ${escapeHTML(warmup.warning)} — continuing in CPU mode.`);
-        } else if (warmup.model_on_gpu) {
-          addMessage('ai', '🚀 GPU is ready. Generating a response...');
-        }
-
-        sendBtn.innerHTML = '<div class="loading"></div> Generating...';
-
-        const payload = buildRagPayload(message);
-        console.debug('💬 [GEMMA] Sending RAG chat payload', payload);
-        const response = await api.gemmaChatRag(payload);
-        console.debug('💬 [GEMMA] RAG chat response', response);
-
-        const aiText = response.answer || response.message || 'No response available';
-        addMessage('ai', aiText, {
-          mode: response.mode,
-          tokens: response.tokens_generated,
-          confidence: response.confidence,
-          sources: response.sources || [],
-        });
-      } catch (error) {
-        console.error('Chat error:', error);
-        addMessage('ai', 'Sorry, I encountered an error while generating that answer. Please try again.');
-      } finally {
-        sendBtn.disabled = false;
-        sendBtn.innerHTML = '<i data-lucide="send" style="width: 18px; height: 18px;"></i> Send';
-        lucide.createIcons();
-      }
-    });
-
-    function addMessage(sender, text, options = {}) {
-      const messageEl = document.createElement('div');
-      messageEl.className = `chat-message ${sender}`;
-
-      if (sender === 'ai') {
-        const modeLabel = options.mode ? options.mode.toUpperCase() : '';
-        const confidenceLabel = typeof options.confidence === 'number'
-          ? `${Math.round(options.confidence * 100)}% confidence`
-          : '';
-
-        const metaLine = [modeLabel, confidenceLabel].filter(Boolean).join(' • ');
-
-        messageEl.innerHTML = `
-          <div class="chat-avatar ai">
-            <i data-lucide="sparkles" style="width: 20px; height: 20px; color: white;"></i>
-          </div>
-          <div class="chat-bubble ai">
-            ${escapeHTML(text)}
-            ${metaLine ? `<div class="text-muted" style="font-size: 0.75rem; margin-top: 0.5rem;">${escapeHTML(metaLine)}</div>` : ''}
-          </div>
-        `;
-
-        if (options.sources && options.sources.length) {
-          const sourcesContainer = document.createElement('div');
-          sourcesContainer.style.marginTop = '0.75rem';
-          sourcesContainer.style.fontSize = '0.75rem';
-          sourcesContainer.innerHTML = '<strong>Sources:</strong>';
-
-          options.sources.forEach((source) => {
-            const sourceLine = document.createElement('div');
-            const label = source.label || 'Source';
-            const speaker = source.speaker ? ` • ${source.speaker}` : '';
-            const timestamp = source.timestamp ? ` • ${source.timestamp}` : '';
-            const snippet = source.text_preview ? ` — ${escapeHTML(source.text_preview)}` : '';
-            const viewBtn = source.job_id
-              ? `<button class="btn btn-ghost btn-xs" onclick="viewTranscript('${source.job_id}', ${source.start_time ?? 'null'})">View</button>`
-              : '';
-            sourceLine.innerHTML = `[${escapeHTML(label)}${speaker}${timestamp}]${snippet} ${viewBtn}`;
-            sourcesContainer.appendChild(sourceLine);
-          });
-
-          messageEl.querySelector('.chat-bubble.ai').appendChild(sourcesContainer);
-        }
-      } else {
-        messageEl.innerHTML = `
-          <div class="chat-bubble user">
-            ${escapeHTML(text)}
-          </div>
-          <div class="chat-avatar user">
-            <i data-lucide="user" style="width: 20px; height: 20px; color: white;"></i>
-          </div>
-        `;
-      }
-
-      chatMessages.appendChild(messageEl);
-      lucide.createIcons();
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-
+    // Quick Actions -> Advanced Analyzer (prompt + run quick)
     async function quickAnalysis(type) {
       const prompts = {
         summary: 'Summarize the most important points from recent conversations.',
         personality: 'Analyze the personality traits shown in recent discussions.',
         patterns: 'What communication patterns have emerged lately?',
       };
-      chatInput.value = prompts[type];
-      chatForm.dispatchEvent(new Event('submit'));
+      try {
+        if (typeof toggleAdvancedAnalysis === 'function') {
+          const content = document.getElementById('advanced-analysis-content');
+          if (content && content.style.display === 'none') {
+            toggleAdvancedAnalysis();
+          }
+        }
+        const mount = document.querySelector('#gemma-advanced-analyzer');
+        if (!mount) return;
+        const promptEl = mount.querySelector('textarea[data-role="prompt"]');
+        const runQuickBtn = mount.querySelector('button[data-role="run-quick"]');
+        if (promptEl) promptEl.value = prompts[type] || prompts.summary;
+        if (runQuickBtn) runQuickBtn.click();
+      } catch (e) {
+        console.warn('Quick action failed', e);
+      }
     }
-
     window.quickAnalysis = quickAnalysis;
     async function loadGPUStats() {
       try {
@@ -444,8 +283,53 @@
       
       // Load GPU stats
       await loadGPUStats();
+
+      // Make sure the analyzer is ready without extra clicks
+      ensureAdvancedAnalysisReady();
     }
-    
+    // ========================================================================
+    // ADVANCED ANALYSIS
+    // ========================================================================
+
+    let advancedAnalyzerInstance = null;
+
+    function ensureAdvancedAnalysisReady() {
+      const content = document.getElementById('advanced-analysis-content');
+      const icon = document.getElementById('analysis-toggle-icon');
+      if (content) {
+        content.style.display = 'block';
+      }
+      if (icon) {
+        icon.style.transform = 'rotate(180deg)';
+      }
+      if (typeof initGemmaAnalyzer === 'function') {
+        if (!advancedAnalyzerInstance) {
+          advancedAnalyzerInstance = initGemmaAnalyzer({ mount: '#gemma-advanced-analyzer' });
+        } else if (advancedAnalyzerInstance.refreshCount) {
+          advancedAnalyzerInstance.refreshCount();
+        }
+      }
+    }
+
+    function toggleAdvancedAnalysis() {
+      const content = document.getElementById('advanced-analysis-content');
+      const icon = document.getElementById('analysis-toggle-icon');
+      const isHidden = content.style.display === 'none';
+
+      content.style.display = isHidden ? 'block' : 'none';
+      icon.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+
+      if (isHidden) {
+        ensureAdvancedAnalysisReady();
+      }
+
+      if (window.lucide && window.lucide.createIcons) {
+        window.lucide.createIcons();
+      }
+    }
+
+    window.toggleAdvancedAnalysis = toggleAdvancedAnalysis;
+
     // Start when DOM ready
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', initPage);

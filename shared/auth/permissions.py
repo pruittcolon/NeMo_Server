@@ -6,6 +6,7 @@ Provides role-based access control and speaker-based data isolation
 from fastapi import HTTPException, Cookie, Depends, Request
 from typing import Optional, List, Dict, Any
 from .auth_manager import get_auth_manager, UserRole, Session, User
+from src.config import SecurityConfig as SecConf
 
 def require_auth(request: Request) -> Session:
     """
@@ -18,7 +19,7 @@ def require_auth(request: Request) -> Session:
         return request.state.session
     
     # Fallback: If middleware didn't run (shouldn't happen), do validation here
-    ws_session = request.cookies.get("ws_session")
+    ws_session = request.cookies.get(SecConf.SESSION_COOKIE_NAME)
     
     if not ws_session:
         raise HTTPException(
@@ -234,4 +235,3 @@ def log_access_attempt(user: User, resource: str, action: str, success: bool, de
     except ImportError:
         # Audit logger not yet implemented, skip
         pass
-

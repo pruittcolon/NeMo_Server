@@ -7,6 +7,54 @@
 // UTILITIES
 // ============================================================================
 
+let toastContainer = null;
+let defaultEmotionConfidence = 0.7;
+
+function clampEmotionConfidence(value) {
+  if (typeof value === 'string') {
+    const parsed = parseFloat(value);
+    if (!Number.isNaN(parsed)) {
+      value = parsed;
+    }
+  }
+  if (!Number.isFinite(value)) return defaultEmotionConfidence;
+  if (value > 1) value = value / 100;
+  if (value < 0) value = 0;
+  if (value > 1) value = 1;
+  return value;
+}
+
+function ensureToastContainer() {
+  if (toastContainer) return toastContainer;
+  if (typeof document === 'undefined') return null;
+
+  const existing = document.querySelector('.toast-container');
+  if (existing) {
+    toastContainer = existing;
+    return toastContainer;
+  }
+
+  if (!document.body) {
+    const readyHandler = () => {
+      document.removeEventListener('DOMContentLoaded', readyHandler);
+      ensureToastContainer();
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', readyHandler, { once: true });
+    } else {
+      requestAnimationFrame(ensureToastContainer);
+    }
+    return null;
+  }
+
+  toastContainer = document.createElement('div');
+  toastContainer.className = 'toast-container';
+  document.body.appendChild(toastContainer);
+  return toastContainer;
+}
+
+let autoRefreshInterval = null;
+
 /**
  * Format timestamp to readable string
  */
@@ -23,6 +71,7 @@ function formatTime(timestamp) {
   }
   
   // Less than 1 hour
+
   if (diff < 3600000) {
     const minutes = Math.floor(diff / 60000);
     return `${minutes}m ago`;
@@ -141,10 +190,10 @@ function createEmotionBadge(emotion, confidence = null) {
   badge.className = 'badge';
   badge.style.background = `${getEmotionColor(emotion)}20`;
   badge.style.color = getEmotionColor(emotion);
-  
-  badge.textContent = confidence 
-    ? `${emotion} (${Math.round(confidence * 100)}%)`
-    : emotion;
+  const normalized = normalizeEmotionConfidence(confidence);
+  const percentText = `${Math.round(normalized * 100)}%`;
+  const label = emotion ? `${emotion} ${percentText}` : percentText;
+  badge.textContent = label.trim();
   
   return badge;
 }
@@ -153,17 +202,13 @@ function createEmotionBadge(emotion, confidence = null) {
 // TOAST NOTIFICATIONS
 // ============================================================================
 
-const toastContainer = (() => {
-  let container = document.querySelector('.toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.className = 'toast-container';
-    document.body.appendChild(container);
-  }
-  return container;
-})();
-
 function showToast(title, message, type = 'info', duration = 3000) {
+  const container = ensureToastContainer();
+  if (!container) {
+    console.warn('[Toast] Unable to render toast container yet:', title, message);
+    return;
+  }
+
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   
@@ -175,7 +220,7 @@ function showToast(title, message, type = 'info', duration = 3000) {
     <button class="glass-button" onclick="this.parentElement.remove()">&times;</button>
   `;
   
-  toastContainer.appendChild(toast);
+  container.appendChild(toast);
   
   if (duration > 0) {
     setTimeout(() => toast.remove(), duration);
@@ -257,6 +302,43 @@ function loadFromStorage(key, defaultValue = null) {
   }
 }
 
+// Initialize baseline from storage if available
+try {
+  const storedBaseline = loadFromStorage('emotion_conf_default', 0.7);
+  if (storedBaseline !== null && storedBaseline !== undefined) {
+    setEmotionConfidenceBaseline(storedBaseline, { persist: false, silent: true });
+  }
+} catch (error) {
+  console.warn('Unable to restore emotion confidence baseline:', error);
+}
+
+function normalizeEmotionConfidence(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return clampEmotionConfidence(value);
+  }
+  return defaultEmotionConfidence;
+}
+
+function getEmotionConfidenceBaseline() {
+  return defaultEmotionConfidence;
+}
+
+function setEmotionConfidenceBaseline(value, { persist = true, silent = false } = {}) {
+  defaultEmotionConfidence = clampEmotionConfidence(value);
+  if (persist) {
+    try {
+      saveToStorage('emotion_conf_default', defaultEmotionConfidence);
+    } catch (error) {
+      console.warn('Failed to persist emotion confidence baseline', error);
+    }
+  }
+  if (!silent) {
+    document.dispatchEvent(new CustomEvent('emotionConfidenceBaselineChanged', {
+      detail: defaultEmotionConfidence,
+    }));
+  }
+}
+
 // ============================================================================
 // THEME MANAGEMENT
 // ============================================================================
@@ -296,8 +378,6 @@ async function testAPIConnection() {
 // ============================================================================
 // AUTO-REFRESH
 // ============================================================================
-
-let autoRefreshInterval = null;
 
 function startAutoRefresh(callback, intervalMs = 2000) {
   stopAutoRefresh();
@@ -406,6 +486,12 @@ window.addEventListener('unhandledrejection', (event) => {
   showToast('Error', 'API request failed. Check your connection.', 'error', 5000);
 });
 
+if (typeof window !== 'undefined') {
+  window.setEmotionConfidenceBaseline = setEmotionConfidenceBaseline;
+  window.getEmotionConfidenceBaseline = getEmotionConfidenceBaseline;
+  window.normalizeEmotionConfidence = normalizeEmotionConfidence;
+}
+
 // ============================================================================
 // EXPORTS
 // ============================================================================
@@ -431,7 +517,8 @@ if (typeof module !== 'undefined' && module.exports) {
     startAutoRefresh,
     stopAutoRefresh,
     highlightText,
+    normalizeEmotionConfidence,
+    getEmotionConfidenceBaseline,
+    setEmotionConfidenceBaseline,
   };
 }
-
-

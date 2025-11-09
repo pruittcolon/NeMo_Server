@@ -3,6 +3,19 @@
  * Wrapper for all 30 backend endpoints
  */
 
+const API_DEFAULT_EMOTION_CONFIDENCE = 0.7;
+
+function resolveEmotionConfidence(raw) {
+  if (typeof window !== 'undefined' && typeof window.normalizeEmotionConfidence === 'function') {
+    return window.normalizeEmotionConfidence(raw);
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const clamped = Math.max(0, Math.min(1, raw));
+    return clamped;
+  }
+  return API_DEFAULT_EMOTION_CONFIDENCE;
+}
+
 class WhisperAPI {
   constructor(baseURL, options = {}) {
     const globalOptions = (typeof window !== 'undefined' && window.NEMO_API_OPTIONS) || {};
@@ -15,8 +28,8 @@ class WhisperAPI {
     this.cacheTimeout = 5000; // 5 seconds
     this.useLegacyRoutes = Boolean(mergedOptions.useLegacyRoutes || (typeof window !== 'undefined' && window.USE_LEGACY_API_ROUTES));
     this.apiPrefix = this.useLegacyRoutes ? '' : '/api';
-    // CSRF config per backend defaults (gateway sets csrf_token cookie)
-    this.csrfCookieName = (typeof window !== 'undefined' && window.CSRF_COOKIE_NAME) || 'csrf_token';
+    // CSRF config per backend defaults (gateway sets ws_csrf cookie)
+    this.csrfCookieName = (typeof window !== 'undefined' && window.CSRF_COOKIE_NAME) || 'ws_csrf';
     this.csrfHeaderName = (typeof window !== 'undefined' && window.CSRF_HEADER_NAME) || 'X-CSRF-Token';
   }
 
@@ -43,7 +56,7 @@ class WhisperAPI {
   /**
    * Generic GET request
    */
-  async get(path, useCache = false) {
+  async get(path, useCache = false, options = {}) {
     // Check cache
     if (useCache && this.cache.has(path)) {
       const cached = this.cache.get(path);
@@ -52,11 +65,15 @@ class WhisperAPI {
       }
     }
 
+    const { analysisId, headers: extraHeaders } = options || {};
+
     try {
       const response = await fetch(this.buildURL(path), {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
+          ...(extraHeaders || {}),
+          ...(analysisId ? { 'X-Analysis-Id': analysisId } : {}),
         },
         credentials: 'include',  // Send cookies for authentication
       });
@@ -76,7 +93,20 @@ class WhisperAPI {
       }
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        let detail;
+        try {
+          const errJson = await response.clone().json();
+          detail = errJson?.detail ?? errJson;
+        } catch (_) {
+          detail = await response.text();
+        }
+        const message = detail
+          ? `[HTTP ${response.status}] ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+          : `HTTP ${response.status}: ${response.statusText}`;
+        const error = new Error(message);
+        error.status = response.status;
+        error.detail = detail;
+        throw error;
       }
 
       const data = await response.json();
@@ -102,17 +132,38 @@ class WhisperAPI {
     return m ? decodeURIComponent(m[1]) : '';
   }
 
-  async post(path, body) {
+  getCsrfToken() {
+    // Try configured name, then common fallbacks
+    const tryNames = [
+      this.csrfCookieName || 'ws_csrf',
+      'ws_csrf',
+      'csrf_token',
+    ];
+    for (const name of tryNames) {
+      const val = this.getCookie(name);
+      if (val) return val;
+    }
+    return '';
+  }
+
+  async post(path, body, options = {}) {
     try {
       const headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       };
-      const csrf = this.getCookie(this.csrfCookieName);
+      const csrf = this.getCsrfToken();
       if (csrf) {
         headers[this.csrfHeaderName] = csrf;
       } else {
         console.warn('[API] No CSRF token found in cookies; POST may be rejected');
+      }
+      const { analysisId, headers: extraHeaders } = options || {};
+      if (analysisId) {
+        headers['X-Analysis-Id'] = analysisId;
+      }
+      if (extraHeaders && typeof extraHeaders === 'object') {
+        Object.assign(headers, extraHeaders);
       }
       const response = await fetch(this.buildURL(path), {
         method: 'POST',
@@ -136,7 +187,20 @@ class WhisperAPI {
       }
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        let detail;
+        try {
+          const errJson = await response.clone().json();
+          detail = errJson?.detail ?? errJson;
+        } catch (_) {
+          detail = await response.text();
+        }
+        const message = detail
+          ? `[HTTP ${response.status}] ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+          : `HTTP ${response.status}: ${response.statusText}`;
+        const error = new Error(message);
+        error.status = response.status;
+        error.detail = detail;
+        throw error;
       }
 
       return await response.json();
@@ -149,14 +213,21 @@ class WhisperAPI {
   /**
    * POST with FormData (for file uploads)
    */
-  async postForm(path, formData) {
+  async postForm(path, formData, options = {}) {
     try {
       const headers = {};
-      const csrf = this.getCookie(this.csrfCookieName);
+      const csrf = this.getCsrfToken();
       if (csrf) {
         headers[this.csrfHeaderName] = csrf;
       } else {
         console.warn('[API] No CSRF token found in cookies; POST_FORM may be rejected');
+      }
+      const { analysisId, headers: extraHeaders } = options || {};
+      if (analysisId) {
+        headers['X-Analysis-Id'] = analysisId;
+      }
+      if (extraHeaders && typeof extraHeaders === 'object') {
+        Object.assign(headers, extraHeaders);
       }
       const response = await fetch(this.buildURL(path), {
         method: 'POST',
@@ -397,6 +468,27 @@ class WhisperAPI {
   }
 
   /**
+   * Get composite analytics (emotions + speech signals)
+   * params: { start_date, end_date, speakers, emotions, metrics }
+   */
+  async getAnalyticsSignals(params = {}) {
+    const query = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      if (Array.isArray(value)) {
+        if (value.length === 0) return;
+        query.set(key, value.join(','));
+        return;
+      }
+      if (String(value).length === 0) return;
+      query.set(key, value);
+    });
+    const qs = query.toString();
+    const path = qs ? `/analytics/signals?${qs}` : '/analytics/signals';
+    return await this.get(path);
+  }
+
+  /**
    * Run comprehensive analysis on filtered memories
    */
   async analyzeMemories(filters) {
@@ -424,13 +516,19 @@ class WhisperAPI {
           const s = Math.floor(start % 60);
           ts = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
         }
+        const segments = Array.isArray(t.segments) ? t.segments : [];
+        const combinedText = (t.full_text || segments.map((seg) => seg.text || '').join(' ')).trim();
+        const emotionConfidence = resolveEmotionConfidence(t.emotion_confidence);
         return {
           type: 'transcript_segment',
           speaker: t.speaker || t.primary_speaker || '',
           title: t.title || t.speaker || 'Transcript',
-          snippet: t.snippet || t.text || t.preview || '',
+          snippet: t.snippet || t.text || t.preview || combinedText || '',
+          full_text: combinedText,
+          segments,
           score: null,
-          emotion: t.emotion || null,
+          emotion: t.emotion || t.dominant_emotion || null,
+          emotion_confidence: emotionConfidence,
           timestamp_label: t.timestamp_label || ts,
           created_at: t.created_at || null,
           job_id: t.job_id || t.transcript_id || null,
@@ -461,13 +559,19 @@ class WhisperAPI {
         ts = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
       }
       const title = r.type === 'memory' ? (md.title || 'Memory Note') : (md.speaker || 'Transcript');
+      const segments = Array.isArray(md.segments) ? md.segments : [];
+      const combinedText = (md.full_text || r.text || segments.map((seg) => seg.text || '').join(' ')).trim();
+      const emotionConfidence = resolveEmotionConfidence(md.emotion_confidence);
       return {
         type: r.type || 'result',
         speaker: md.speaker || (r.type === 'memory' ? 'Memory Note' : ''),
         title,
-        snippet: r.text || '',
+        snippet: r.text || combinedText || '',
+        full_text: combinedText,
+        segments,
         score: typeof r.score === 'number' ? r.score : 0,
         emotion: md.emotion || null,
+        emotion_confidence: emotionConfidence,
         timestamp_label: ts,
         created_at: md.created_at || null,
         job_id: md.job_id || md.transcript_id || null,
@@ -545,10 +649,132 @@ class WhisperAPI {
   }
 
   /**
+   * Advanced conversation analysis with custom prompts
+   * @param {Object} options - Analysis options
+   * @param {Object} options.filters - Filters (speakers, emotions, dates, limit)
+   * @param {string} options.custom_prompt - Custom prompt template
+   * @param {number} options.max_tokens - Max tokens (default 1024)
+   * @param {number} options.temperature - Temperature (default 0.3)
+   */
+  async gemmaAnalyze(options, meta = {}) {
+    return await this.post('/gemma/analyze', options, meta);
+  }
+
+  /**
+   * Get all unique speakers from database
+   */
+  async getAllSpeakers() {
+    return await this.get('/transcripts/speakers');
+  }
+
+  async getSpeakers(options = {}) {
+    return await this.get('/transcripts/speakers', false, options);
+  }
+
+  /**
+   * Count transcripts matching filters
+   * @param {Object} filters - Filter criteria
+   */
+  async countTranscripts(filters, meta = {}) {
+    return await this.post('/transcripts/count', filters, meta);
+  }
+
+  /**
+   * Query transcript segments with pagination and sorting
+   * @param {Object} filters - Filter criteria (limit, offset, sort_by, order, speakers, emotions, dates, keywords)
+   * @param {Object} meta - Optional meta (e.g., analysisId)
+   */
+  async queryTranscripts(filters, meta = {}) {
+    return await this.post('/transcripts/query', filters, meta);
+  }
+
+  /**
+   * Create streaming Gemma analysis job
+   */
+  async startGemmaAnalyzeJob(payload, meta = {}) {
+    return await this.post('/gemma/analyze/stream', payload, meta);
+  }
+
+  /**
    * RAG-enhanced Gemma chat (retrieves context from RAG)
    */
   async gemmaChatRag(payload) {
     return await this.post('/gemma/chat-rag', payload);
+  }
+
+  async chatOnArtifactV2(payload) {
+    return await this.post('/gemma/chat-on-artifact/v2', payload);
+  }
+
+  // ============================================================================
+  // ANALYSIS ARTIFACTS
+  // ============================================================================
+
+  async archiveAnalysis(body, meta = {}) {
+    return await this.post('/analysis/archive', body, meta);
+  }
+
+  async listArtifacts(limit = 50, offset = 0) {
+    const qs = `?limit=${Number(limit)}&offset=${Number(offset)}`;
+    try {
+      return await this.get(`/analysis/list${qs}`);
+    } catch (error) {
+      const msg = error?.message || '';
+      if (/HTTP 404/.test(msg)) {
+        console.warn('[API] /analysis/list 404 – treating as empty archive');
+        return { success: true, items: [], count: 0, has_more: false };
+      }
+      throw error;
+    }
+  }
+
+  async getArtifact(artifactId) {
+    try {
+      return await this.get(`/analysis/${encodeURIComponent(artifactId)}`);
+    } catch (error) {
+      const msg = error?.message || '';
+      if (/HTTP 404/.test(msg)) {
+        console.warn('[API] /analysis/{id} 404 – artifact not found');
+        return { success: false, artifact: null };
+      }
+      throw error;
+    }
+  }
+
+  async searchArtifacts(query, limit = 20) {
+    return await this.post('/analysis/search', { query, limit });
+  }
+
+  // Meta-analysis (SSE)
+  streamMetaAnalysis(payload, { onEvent, analysisId } = {}) {
+    const headers = {};
+    if (analysisId) headers['X-Analysis-Id'] = analysisId;
+    // Using fetch EventSource polyfill is out of scope; rely on native EventSource
+    // Serialize payload through a job creator would be ideal; API accepts direct POST SSE via gateway
+    // For simplicity, we provide a helper returning a fetch stream via text/event-stream
+    const url = this.buildURL('/analysis/meta');
+    const controller = new AbortController();
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      body: JSON.stringify(payload),
+      credentials: 'include',
+      signal: controller.signal,
+    }).then(async (resp) => {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        if (onEvent) onEvent(chunk);
+      }
+    }).catch(() => {});
+    return () => controller.abort();
+  }
+
+  async chatOnArtifact({ artifact_id, message, mode = 'rag', max_tokens = 384, temperature = 0.5 }) {
+    return await this.post('/gemma/chat-on-artifact', { artifact_id, message, mode, max_tokens, temperature });
   }
 
   // ============================================================================

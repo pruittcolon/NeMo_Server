@@ -3,6 +3,29 @@
  * Handles login state, role checks, and session validation
  */
 
+const API_BASE = (() => {
+  if (typeof window !== 'undefined') {
+    const configured =
+      window.API_BASE_URL ||
+      window.API_GATEWAY_URL ||
+      (window.NEMO_API_OPTIONS && window.NEMO_API_OPTIONS.baseURL);
+    if (configured) {
+      return configured.replace(/\/+$/, '');
+    }
+    const origin = window.location && window.location.origin;
+    if (origin && origin !== 'null' && origin.startsWith('http')) {
+      return origin.replace(/\/+$/, '');
+    }
+  }
+  return 'http://localhost:8000';
+})();
+
+function buildApiUrl(path) {
+  if (!path) return API_BASE;
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${API_BASE}${normalized}`;
+}
+
 const Auth = {
   currentUser: null,
   
@@ -12,7 +35,7 @@ const Auth = {
    */
   async checkSession() {
     try {
-      const response = await fetch('/api/auth/check', {
+      const response = await fetch(buildApiUrl('/api/auth/check'), {
         method: 'GET',
         credentials: 'include' // Include cookies
       });
@@ -99,7 +122,7 @@ const Auth = {
    */
   async logout() {
     try {
-      await fetch('/api/auth/logout', {
+      await fetch(buildApiUrl('/api/auth/logout'), {
         method: 'POST',
         credentials: 'include'
       });
