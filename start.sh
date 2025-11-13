@@ -23,6 +23,10 @@ API_GATEWAY_URL="${API_GATEWAY_URL:-http://localhost:8000}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-120}"  # seconds
 BROWSER_OPEN_DELAY=5      # seconds after services are healthy
 SHOULD_EXIT=false
+FAST_MODE="${FAST_MODE:-false}"
+VALIDATE_PORTS="${VALIDATE_PORTS:-false}"
+
+LOG_ROOT="$SCRIPT_DIR/logs/startup"
 
 # ============================================================================
 # Helper Functions
@@ -49,6 +53,144 @@ print_error() {
 print_info() {
     echo -e "${BLUE}ℹ${NC}  $1"
 }
+
+compose_cmd() {
+    if command -v docker-compose &> /dev/null; then
+        docker-compose "$@"
+    else
+        docker compose "$@"
+    fi
+}
+
+capture_diagnostics() {
+    local reason="${1:-general}"
+    local timestamp
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    local dest="${LOG_ROOT}/${timestamp}_${reason}"
+    mkdir -p "$dest"
+    print_warning "Capturing diagnostic logs (${reason}) → ${dest}"
+
+    if [ -d "$SCRIPT_DIR/docker" ]; then
+        pushd "$SCRIPT_DIR/docker" >/dev/null 2>&1 || return
+        {
+            compose_cmd ps
+        } &> "${dest}/compose_ps.txt" || true
+        {
+            compose_cmd ps --services --status running
+        } &> "${dest}/services_running.txt" || true
+        {
+            compose_cmd logs
+        } &> "${dest}/compose_logs.txt" || true
+        local critical_services=("gateway" "gemma-service" "rag-service" "gpu-coordinator" "transcription-service" "emotion-service")
+        for svc in "${critical_services[@]}"; do
+            {
+                compose_cmd logs "$svc"
+            } &> "${dest}/${svc}.log" || true
+        done
+        popd >/dev/null 2>&1 || true
+    fi
+
+    {
+        docker ps --format "table {{.Names}}\t{{.Ports}}\t{{.Status}}" 2>/dev/null
+    } > "${dest}/docker_ps.txt" || true
+    print_info "Diagnostics saved to ${dest}"
+}
+
+validate_port_bindings() {
+    print_header "Validating Service Port Exposure"
+    local ps_output
+    ps_output=$(docker ps --filter "name=refactored" --format '{{json .}}' 2>/dev/null || true)
+    if [ -z "$ps_output" ]; then
+        print_warning "No running Nemo containers found for validation"
+        return
+    fi
+
+    local default_policy='{"refactored_gateway":["0.0.0.0","127.","[::]","::","localhost"],"refactored_postgres":["127.","::1"],"refactored_redis":["127.","::1"]}'
+    local policy="${PORT_VALIDATE_POLICY:-$default_policy}"
+
+    if PORT_VALIDATE_INPUT="$ps_output" PORT_VALIDATE_POLICY="$policy" python3 - <<'PORT_VALIDATE'
+import json
+import os
+import sys
+
+
+def normalize_host(host_spec: str) -> str:
+    host_spec = host_spec.strip()
+    if not host_spec:
+        return host_spec
+    if "[" in host_spec and "]" in host_spec:
+        host = host_spec.split("]")[0].strip("[]")
+        return host or "::"
+    if host_spec.count(":") > 1:
+        parts = host_spec.split(":")
+        return ":".join(parts[:-1]) or "::"
+    if ":" in host_spec:
+        return host_spec.rsplit(":", 1)[0]
+    return host_spec
+
+
+def host_allowed(service: str, host: str, policy: dict[str, list[str]]) -> bool:
+    allowed = policy.get(service, [])
+    for entry in allowed:
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry.endswith("*") and host.startswith(entry[:-1]):
+            return True
+        if entry.endswith(".") and host.startswith(entry):
+            return True
+        if host == entry:
+            return True
+    return False
+
+
+policy_raw = os.environ.get("PORT_VALIDATE_POLICY", "{}")
+ps_dump = os.environ.get("PORT_VALIDATE_INPUT", "")
+try:
+    policy = json.loads(policy_raw)
+except json.JSONDecodeError:
+    print(f"[PORT-VALIDATION] Invalid PORT_VALIDATE_POLICY JSON: {policy_raw}", file=sys.stderr)
+    sys.exit(1)
+
+violations: list[str] = []
+for line in ps_dump.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        info = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    service = info.get("Names", "")
+    ports = info.get("Ports") or ""
+    if not service or not ports or service not in policy:
+        continue
+    for mapping in ports.split(","):
+        mapping = mapping.strip()
+        if "->" not in mapping:
+            continue
+        host_part = mapping.split("->", 1)[0].strip()
+        host_ip = normalize_host(host_part)
+        if not host_allowed(service, host_ip, policy):
+            violations.append(
+                f"Service {service} exposes {host_part} (normalized {host_ip}) outside policy"
+            )
+
+if violations:
+    print("\\n".join(f"[PORT-VALIDATION] {msg}" for msg in violations), file=sys.stderr)
+    sys.exit(1)
+
+sys.exit(0)
+PORT_VALIDATE
+    then
+        print_success "Port exposure validation passed"
+    else
+        print_error "Port exposure validation failed"
+        capture_diagnostics "port_validation"
+        exit 1
+    fi
+}
+
 
 cleanup() {
     if [ "$SHOULD_EXIT" = true ]; then
@@ -156,7 +298,7 @@ check_secrets() {
     print_header "Checking Secrets"
     
     local secrets_dir="docker/secrets"
-    local required_secrets=("session_key" "jwt_secret" "postgres_password" "postgres_user" "users_db_key" "rag_db_key")
+    local required_secrets=("session_key" "jwt_secret_primary" "jwt_secret_previous" "jwt_secret" "postgres_password" "postgres_user" "users_db_key" "rag_db_key")
     local missing_secrets=()
     
     if [ ! -d "$secrets_dir" ]; then
@@ -185,13 +327,33 @@ check_secrets() {
     fi
 }
 
+prepare_host_dirs() {
+    print_header "Preparing Host Directories"
+    # Ensure bind mounts exist with permissive dev permissions
+    local dirs=("gemma_instance")
+    for d in "${dirs[@]}"; do
+        if [ ! -d "$SCRIPT_DIR/$d" ]; then
+            mkdir -p "$SCRIPT_DIR/$d"
+            print_info "Created $d"
+        fi
+        # Dev-friendly permissions to avoid UID/GID mismatches
+        chmod 0777 "$SCRIPT_DIR/$d" || true
+        print_success "Ready: $d ($(ls -ld "$SCRIPT_DIR/$d"))"
+    done
+}
+
 stop_existing_services() {
     print_header "Stopping Existing Services"
     
     cd docker
     
     print_info "Stopping all Nemo/Refactored containers..."
-    docker-compose down -v 2>/dev/null || true
+    # Only wipe volumes when explicitly requested
+    if [ "${WIPE_VOLUMES:-false}" = true ]; then
+        compose_cmd down -v 2>/dev/null || true
+    else
+        compose_cmd down 2>/dev/null || true
+    fi
     
     # Force kill any remaining containers
     docker ps -a | grep -E "refactored|nemo" | awk '{print $1}' | xargs -r docker rm -f 2>/dev/null || true
@@ -211,36 +373,23 @@ start_services() {
     if [ "$DO_BUILD" = true ]; then
         if [ "$BUILD_ALL" = true ]; then
             print_info "Rebuilding all services (docker compose build)..."
-            if command -v docker-compose &> /dev/null; then
-                docker-compose build || true
-            else
-                docker compose build || true
-            fi
+            compose_cmd build || true
         else
             print_info "Rebuilding API Gateway only (use --build-all to rebuild everything)..."
-            if command -v docker-compose &> /dev/null; then
-                docker-compose build api-gateway || true
-            else
-                docker compose build api-gateway || true
-            fi
+            compose_cmd build api-gateway || true
         fi
     else
         print_info "Skipping image rebuild (pass --build or --build-all to rebuild)"
     fi
+
     
     print_info "Starting containers..."
     
-    # Use docker-compose or docker compose
-    if command -v docker-compose &> /dev/null; then
-        docker-compose up -d
-    else
-        docker compose up -d
-    fi
-    
-    if [ $? -eq 0 ]; then
+    if compose_cmd up -d; then
         print_success "Services started successfully"
     else
         print_error "Failed to start services"
+        capture_diagnostics "start_failure"
         cd ..
         exit 1
     fi
@@ -271,6 +420,7 @@ wait_for_services() {
         if [ $elapsed -gt $HEALTH_CHECK_TIMEOUT ]; then
             print_error "Health check timeout after ${HEALTH_CHECK_TIMEOUT}s"
             print_info "Check logs with: cd docker && docker-compose logs"
+            capture_diagnostics "healthcheck_timeout"
             exit 1
         fi
         
@@ -405,6 +555,12 @@ main() {
             --no-browser)
                 OPEN_BROWSER=false
                 ;;
+            --fast)
+                FAST_MODE=true
+                ;;
+            --validate-ports)
+                VALIDATE_PORTS=true
+                ;;
         esac
     done
     # Clear screen only if running in a terminal with TERM set
@@ -429,22 +585,37 @@ EOF
     check_dependencies
     
     # Step 2: Run security hardening
-    run_security_hardening
-    
-    # Step 3: Verify security implementation
-    verify_security_implementation
+    if [ "$FAST_MODE" = true ]; then
+        print_warning "Fast mode enabled - skipping security hardening & verification steps"
+    else
+        run_security_hardening
+        verify_security_implementation
+    fi
     
     # Step 4: Check secrets
     check_secrets
     
+    # Step 4.5: Prepare host directories for bind mounts
+    prepare_host_dirs
+
     # Step 5: Stop existing services
     stop_existing_services
     
     # Step 6: Start services
     start_services "$BUILD" "$BUILD_ALL"
     
+    # Optional: Validate exposed ports immediately after bring-up
+    if [ "$VALIDATE_PORTS" = true ]; then
+        validate_port_bindings
+    fi
+    
     # Step 7: Wait for services to be healthy
     wait_for_services
+    
+    # Re-validate port bindings post health checks to catch late binds
+    if [ "$VALIDATE_PORTS" = true ]; then
+        validate_port_bindings
+    fi
     
     # Step 8: Show service information
     show_service_info
@@ -480,8 +651,13 @@ EOF
     echo ""
 }
 
-# Trap Ctrl+C to show logs
-trap 'echo -e "\n${BLUE}Showing logs (Ctrl+C again to exit)...${NC}\n"; cd docker && docker-compose logs -f' INT
+# Trap Ctrl+C to show logs using compose_cmd
+tail_logs_trap() {
+    echo -e "\n${BLUE}Showing logs (Ctrl+C again to exit)...${NC}\n"
+    pushd "$SCRIPT_DIR/docker" >/dev/null 2>&1 || return
+    compose_cmd logs -f
+}
+trap tail_logs_trap INT
 
 # Run main function
 main

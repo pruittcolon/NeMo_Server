@@ -407,6 +407,13 @@ class WhisperAPI {
   }
 
   /**
+   * Get indexed transcript dataset window (diagnostics)
+   */
+  async transcriptsTimeRange(options = {}) {
+    return await this.get('/debug/transcripts/time-range', false, options);
+  }
+
+  /**
    * Get memory by ID
    */
   async getMemory(id) {
@@ -486,6 +493,40 @@ class WhisperAPI {
     const qs = query.toString();
     const path = qs ? `/analytics/signals?${qs}` : '/analytics/signals';
     return await this.get(path);
+  }
+
+  /**
+   * Drill-down: fetch transcript segments filtered by emotion/speaker/date.
+   * params: { emotions: [], speakers: [], start_date, end_date, limit, offset, order }
+   */
+  async getAnalyticsSegments(params = {}) {
+    const query = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      if (Array.isArray(value)) {
+        if (!value.length) return;
+        query.set(key, value.join(','));
+        return;
+      }
+      if (String(value).length === 0) return;
+      query.set(key, value);
+    });
+    const qs = query.toString();
+    const path = qs ? `/analytics/segments?${qs}` : '/analytics/segments';
+    try {
+      return await this.get(path);
+    } catch (error) {
+      if (error?.status === 404 && !this.useLegacyRoutes) {
+        const original = this.useLegacyRoutes;
+        try {
+          this.useLegacyRoutes = true;
+          return await this.get(path);
+        } finally {
+          this.useLegacyRoutes = original;
+        }
+      }
+      throw error;
+    }
   }
 
   /**
@@ -775,6 +816,45 @@ class WhisperAPI {
 
   async chatOnArtifact({ artifact_id, message, mode = 'rag', max_tokens = 384, temperature = 0.5 }) {
     return await this.post('/gemma/chat-on-artifact', { artifact_id, message, mode, max_tokens, temperature });
+  }
+
+  // =========================================================================
+  // EMAIL ANALYZER
+  // =========================================================================
+
+  async getEmailUsers() {
+    return await this.get('/email/users');
+  }
+
+  async getEmailLabels() {
+    return await this.get('/email/labels');
+  }
+
+  async getEmailStats(params = {}) {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value).length) {
+        query.set(key, value);
+      }
+    });
+    const qs = query.toString();
+    return await this.get(qs ? `/email/stats?${qs}` : '/email/stats');
+  }
+
+  async queryEmails(payload) {
+    return await this.post('/email/query', payload);
+  }
+
+  async emailAnalyzeQuick(payload) {
+    return await this.post('/email/analyze/quick', payload);
+  }
+
+  async emailAnalyzeGemmaQuick(payload) {
+    return await this.post('/email/analyze/gemma/quick', payload);
+  }
+
+  async emailAnalyzeCancel(payload) {
+    return await this.post('/email/analyze/cancel', payload);
   }
 
   // ============================================================================

@@ -1,33 +1,7 @@
 # Transcription Service Dependencies
-# FastAPI & Server
-fastapi==0.110.3
-uvicorn[standard]==0.30.6
-pydantic==2.10.6
-python-multipart==0.0.9
-python-dotenv==1.0.1
+# The actual locked dependency list lives in requirements.lock to keep Docker caching stable.
+# Keep all edits in that file so the install layer can be reused reliably.
+-r requirements.lock
 
-# HTTP Client
-httpx==0.27.2
-
-# Redis for pause/resume coordination
-redis==5.0.1
-
-# Audio Processing
-numpy==1.26.4
-librosa==0.10.2
-soundfile==0.12.1
-ffmpeg-python==0.2.0
-
-# PyTorch & NeMo
-torch==2.4.1
-torchaudio==2.4.1
-Cython
-texterrors>=0.4.4
-nemo_toolkit[all]
-
-# Machine Learning
-scikit-learn==1.3.2
-scipy==1.11.4
-
-# Diarization (optional - can use NeMo's built-in or pyannote for better accuracy)
-pyannote.audio==3.1.1
+# Optional CUDA bindings are built into the base image; leave commented to document intent.
+# cuda-python==12.4.0  # Already present in base CUDA image; leave commented to avoid redundant pip install

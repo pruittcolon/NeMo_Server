@@ -148,11 +148,55 @@
     return `${year}-${month}-${day}`;
   }
 
+  function formatWindowTimestamp(value) {
+    if (value === null || value === undefined || value === '') return null;
+    try {
+      const dt = new Date(value);
+      if (!Number.isNaN(dt.getTime())) {
+        return `${dt.toLocaleDateString()} ${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      }
+    } catch (_) {
+      /* noop */
+    }
+    const numeric = Number(value);
+    if (!Number.isNaN(numeric)) {
+      try {
+        const dt = new Date(numeric > 1e12 ? numeric : numeric * 1000);
+        if (!Number.isNaN(dt.getTime())) {
+          return `${dt.toLocaleDateString()} ${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        }
+      } catch (_) {
+        /* noop */
+      }
+    }
+    return String(value);
+  }
+
+  function summarizeWindowRange(windowStats) {
+    if (!windowStats) return '';
+    const start = formatWindowTimestamp(windowStats?.transcript_range?.start);
+    const end = formatWindowTimestamp(windowStats?.transcript_range?.end);
+    if (start && end) return `${start} → ${end}`;
+    if (start || end) return start || end;
+    return '';
+  }
+
   function createAnalysisId() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
       return crypto.randomUUID();
     }
     return 'analysis-' + Math.random().toString(36).slice(2, 10);
+  }
+
+  function encodePayload(payload) {
+    try {
+      const jsonStr = JSON.stringify(payload || {});
+      let b64 = btoa(unescape(encodeURIComponent(jsonStr)));
+      b64 = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      return b64;
+    } catch (_) {
+      return '';
+    }
   }
 
   function createEventElement(message, level = 'info') {
@@ -190,13 +234,13 @@
     return `
       <div class="analyzer-card">
         <div class="analyzer-filters">
-          <div class="analyzer-section">
+          <div class="analyzer-section" data-stack="filters">
             <h3>Date Range</h3>
             <div class="analyzer-date-presets">
               ${datePresets
                 .map(
-                  (preset, index) => `
-                    <button class="chip" data-days="${preset.days}" ${index === 0 ? 'data-active="true"' : ''}>
+                  (preset) => `
+                    <button class="chip" data-days="${preset.days}" ${preset.days === -1 ? 'data-active="true"' : ''}>
                       ${preset.label}
                     </button>
                   `
@@ -214,9 +258,12 @@
                 <input type="date" data-role="end-date" class="input" disabled>
               </div>
             </div>
+            <p class="text-muted analyzer-transcript-range" data-role="transcript-range">
+              Loading transcript stats…
+            </p>
           </div>
 
-          <div class="analyzer-section">
+          <div class="analyzer-section" data-stack="filters">
             <h3>Speakers & Emotions</h3>
             <div class="analyzer-grid-two">
               <div>
@@ -226,8 +273,9 @@
                 </select>
               </div>
               <div>
-                <label>Limit (max statements)</label>
+                <label>Viewer Page Size</label>
                 <input type="number" min="1" max="200" value="20" data-role="limit" class="input">
+                <p class="text-muted" style="font-size:12px;margin-top:4px;">Controls how many rows load in the transcript browser.</p>
               </div>
             </div>
             <div class="analyzer-emotions">
@@ -325,6 +373,13 @@
 
             <div class="analyzer-summary-body">
               <div class="analyzer-gpu" data-role="gpu-status">GPU status: unknown</div>
+              <div class="analyzer-run-config">
+                <label for="analyzer-analysis-count">Statements to Analyze</label>
+                <div class="analyzer-run-config-input">
+                  <input id="analyzer-analysis-count" type="number" min="1" max="200" value="50" data-role="analysis-count" class="input">
+                  <p class="text-muted" style="font-size:12px;margin-top:4px;">Gemma stops after this many statements per run (applies to streaming and quick summary).</p>
+                </div>
+              </div>
               <div class="analyzer-actions">
                 <button class="btn btn-primary" data-role="run-stream">
                   <i data-lucide="activity"></i>
@@ -359,70 +414,73 @@
           </div>
         </div>
       </div>
-      <div class="analyzer-db-panel" style="margin-top: 16px;">
-        <div class="analyzer-db-viewer" data-role="db-viewer" style="width: 100%;">
-          <div class="analyzer-db-header">
-            <h3 style="margin:0;">Transcript Browser</h3>
-            <div class="analyzer-db-controls">
-              <input class="input" data-role="db-search" placeholder="Search page…"/>
-              <button class="chip" data-role="db-density">Dense View</button>
-              <select class="input" data-role="sort-select" aria-label="Sort transcripts by column" style="min-width:160px;">
-                <option value="created_at">Sort: Date</option>
-                <option value="speaker">Sort: Speaker</option>
-                <option value="emotion">Sort: Emotion</option>
-                <option value="job_id">Sort: Job</option>
-                <option value="start_time">Sort: Start Time</option>
-              </select>
-              <button class="chip" data-role="order-toggle" data-order="desc">Order: Desc</button>
-              <button class="chip" data-role="db-export">Export CSV</button>
-            </div>
-          </div>
-          <div class="analyzer-db-header" style="margin-top:-.4rem;">
-            <div style="flex:1"></div>
-            <div class="analyzer-db-controls" data-role="cols-panel">
-              <label class="checkbox-pill"><input type="checkbox" data-col="created_at" checked><span>Created Time</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="start_time"><span>Start Time</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="end_time"><span>End Time</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="duration" checked><span>Duration</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="speaker" checked><span>Speaker</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="emotion" checked><span>Emotion</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="job_id" checked><span>Job ID</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="transcript_id"><span>Transcript ID</span></label>
-              <label class="checkbox-pill"><input type="checkbox" data-col="segment_id"><span>Segment ID</span></label>
-            </div>
-          </div>
-          <div class="analyzer-db-list" data-role="db-list">
-            <div class="db-header" data-role="db-header-cols"></div>
-          </div>
-          <div class="analyzer-db-meta" data-role="db-meta"></div>
-        </div>
-      </div>
-      <div class="analyzer-archive" style="margin-top: 24px;">
-        <div style="display:flex; gap:16px; align-items:flex-start;">
-          <div style="flex: 0 0 360px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-              <h3 style="margin:0;">Analysis Archive</h3>
-              <button class="chip" data-role="artifacts-refresh">Refresh</button>
-            </div>
-            <div class="artifact-list" data-role="artifacts-list">
-              <div data-role="artifacts-local"></div>
-              <div data-role="artifacts-remote"></div>
-            </div>
-            <button class="btn btn-ghost" data-role="artifacts-more" style="margin-top:8px;">Load More</button>
-          </div>
-          <div style="flex: 1; min-width: 0;">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-              <h3 style="margin:0;" data-role="artifact-title">Select an artifact</h3>
-              <div style="display:flex; gap:8px;">
-                <button class="btn" data-role="meta-run">Run Meta-Analysis</button>
-                <button class="btn btn-primary" data-role="chat-open">Ask About This</button>
+      <div class="gemma-transcript-stack">
+        <section class="gemma-transcript-card analyzer-db-panel">
+          <div class="analyzer-db-viewer" data-role="db-viewer">
+            <div class="analyzer-db-header">
+              <h3>Transcript Browser</h3>
+              <div class="analyzer-db-controls">
+                <input class="input" data-role="db-search" placeholder="Search page…"/>
+                <button class="chip" data-role="db-density">Dense View</button>
+                <select class="input" data-role="sort-select" aria-label="Sort transcripts by column">
+                  <option value="created_at">Sort: Date</option>
+                  <option value="speaker">Sort: Speaker</option>
+                  <option value="emotion">Sort: Emotion</option>
+                  <option value="job_id">Sort: Job</option>
+                  <option value="start_time">Sort: Start Time</option>
+                </select>
+                <button class="chip" data-role="order-toggle" data-order="desc">Order: Desc</button>
+                <button class="chip" data-role="db-export">Export CSV</button>
               </div>
             </div>
-            <div class="artifact-preview">
-              <pre data-role="artifact-body" class="artifact-body">—</pre>
+            <div class="analyzer-db-header">
+              <div style="flex:1"></div>
+              <div class="analyzer-db-controls" data-role="cols-panel">
+                <label class="checkbox-pill"><input type="checkbox" data-col="created_at" checked><span>Created Time</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="start_time"><span>Start Time</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="end_time"><span>End Time</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="duration" checked><span>Duration</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="speaker" checked><span>Speaker</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="emotion" checked><span>Emotion</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="job_id" checked><span>Job ID</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="transcript_id"><span>Transcript ID</span></label>
+                <label class="checkbox-pill"><input type="checkbox" data-col="segment_id"><span>Segment ID</span></label>
+              </div>
+            </div>
+            <div class="analyzer-db-list" data-role="db-list">
+              <div class="db-header" data-role="db-header-cols"></div>
+            </div>
+            <div class="analyzer-db-meta" data-role="db-meta"></div>
+          </div>
+        </section>
+
+        <section class="gemma-transcript-card analyzer-archive">
+          <div class="analyzer-archive-grid">
+            <div class="archive-column archive-column--list">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                <h3 style="margin:0;">Analysis Archive</h3>
+                <button class="chip" data-role="artifacts-refresh">Refresh</button>
+              </div>
+              <div class="artifact-list" data-role="artifacts-list">
+                <div data-role="artifacts-local"></div>
+                <div data-role="artifacts-remote"></div>
+              </div>
+              <button class="btn btn-ghost" data-role="artifacts-more" style="margin-top:8px;">Load More</button>
+            </div>
+            <div class="archive-column archive-column--preview">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                <h3 style="margin:0;" data-role="artifact-title">Select an artifact</h3>
+                <div style="display:flex; gap:8px;">
+                  <button class="btn" data-role="meta-run">Run Meta-Analysis</button>
+                  <button class="btn btn-primary" data-role="chat-open">Ask About This</button>
+                </div>
+              </div>
+              <div class="artifact-preview">
+                <pre data-role="artifact-body" class="artifact-body">—</pre>
+              </div>
             </div>
           </div>
-        </div>
+        </section>
       </div>
 
       <div class="meta-overlay" data-role="meta-overlay" style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center;">
@@ -436,22 +494,22 @@
       </div>
 
       <div class="chat-drawer" data-role="chat-drawer" data-position="bottom">
-        <div style="padding:12px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #374151;">
+        <div class="chat-drawer__header">
           <strong>Ask About This</strong>
-          <div>
-            <button class="chip" data-role="chat-summary" style="margin-right:8px;">Summarize Chat</button>
-            <select data-role="chat-mode" class="input" style="margin-right:8px;">
+          <div class="chat-drawer__actions">
+            <button class="chip" data-role="chat-summary">Summarize Chat</button>
+            <select data-role="chat-mode" class="input">
               <option value="rag">RAG (fast)</option>
               <option value="long">Long Context</option>
             </select>
             <button class="chip" data-role="chat-close">Close</button>
           </div>
         </div>
-        <div data-role="chat-messages" style="flex:1; overflow:auto; padding:12px;">
-          <div style="color:#9ca3af;">Select an artifact and ask a question.</div>
+        <div data-role="chat-messages" class="chat-drawer__body">
+          <div style="color:#9ca3af; font-size:0.85rem;">Select an artifact and ask a question.</div>
         </div>
-        <div style="padding:12px; border-top:1px solid #374151; display:flex; gap:8px;">
-          <input data-role="chat-input" class="input" placeholder="Ask a question…" style="flex:1;"/>
+        <div class="chat-drawer__footer">
+          <input data-role="chat-input" class="input" placeholder="Ask a question…"/>
           <button class="btn btn-primary" data-role="chat-send">Send</button>
         </div>
       </div>
@@ -490,8 +548,10 @@
       customButton: mountEl.querySelector('.analyzer-date-presets .chip[data-custom]'),
       startDate: mountEl.querySelector('input[data-role="start-date"]'),
       endDate: mountEl.querySelector('input[data-role="end-date"]'),
+      transcriptRange: mountEl.querySelector('[data-role="transcript-range"]'),
       speakerSelect: mountEl.querySelector('select[data-role="speaker"]'),
       limitInput: mountEl.querySelector('input[data-role="limit"]'),
+      analysisCountInput: mountEl.querySelector('input[data-role="analysis-count"]'),
       emotionAll: mountEl.querySelector('input[data-role="emotion-all"]'),
       emotionChecks: Array.from(mountEl.querySelectorAll('input[data-role="emotion-option"]')),
       emotionConfidenceRange: mountEl.querySelector('[data-role="emotion-confidence-range"]'),
@@ -620,6 +680,7 @@ Provide your analysis in clear, structured sections.`).trim();
       running: false,
       total: 0,
       completed: 0,
+      lastCount: null,
       contextLines: parseInt(els.contextLines.value, 10) || 3,
       latestResultTs: 0,
       debounceTimer: null,
@@ -628,7 +689,7 @@ Provide your analysis in clear, structured sections.`).trim();
       viewer: {
         sort_by: 'created_at',
         order: 'desc',
-        limit: 50,
+        limit: Math.max(1, Math.min(200, parseInt(els.limitInput.value, 10) || 20)),
         offset: 0,
         loading: false,
         has_more: true,
@@ -649,6 +710,58 @@ Provide your analysis in clear, structured sections.`).trim();
       localArtifactMap: Object.create(null),
       chatSessionId: null,
       chatMessagesHistory: [],
+      transcriptWindow: null,
+    };
+
+    const updateTranscriptRangeBanner = (loadingText = null) => {
+      if (!els.transcriptRange) return;
+      if (loadingText) {
+        els.transcriptRange.textContent = loadingText;
+        return;
+      }
+      const stats = state.transcriptWindow;
+      if (!stats || !stats.transcript_count) {
+        els.transcriptRange.textContent = 'No transcripts have been indexed yet.';
+        return;
+      }
+      const base = summarizeWindowRange(stats);
+      let text = `Indexed transcripts: ${stats.transcript_count}`;
+      if (base) {
+        text += ` (${base})`;
+      }
+      if (Number.isFinite(state.lastCount)) {
+        if (state.lastCount === 0 && stats.transcript_count > 0) {
+          text += ' • 0 match current filters – adjust your date range or filters.';
+        } else if (state.lastCount >= 0) {
+          text += ` • Current filters match ${state.lastCount}`;
+        }
+      }
+      if (stats.segment_count) {
+        text += ` • Segments: ${stats.segment_count}`;
+      }
+      els.transcriptRange.textContent = text;
+    };
+
+    const refreshTranscriptWindow = async () => {
+      if (!els.transcriptRange) return;
+      updateTranscriptRangeBanner('Loading transcript stats…');
+      try {
+        const stats = await api.transcriptsTimeRange();
+        if (stats && typeof stats.transcript_count === 'number') {
+          state.transcriptWindow = stats;
+          updateTranscriptRangeBanner();
+          logEvent(
+            `[RAG] Indexed transcripts ${stats.transcript_count} (${summarizeWindowRange(stats) || 'no timestamps'})`,
+            'info',
+          );
+        } else {
+          state.transcriptWindow = null;
+          updateTranscriptRangeBanner('Transcript stats unavailable.');
+        }
+      } catch (error) {
+        console.warn('[Analyzer] Failed to load transcript stats', error);
+        updateTranscriptRangeBanner('Transcript stats unavailable.');
+      }
     };
 
     const updateEmotionConfidenceUI = (value) => {
@@ -743,6 +856,9 @@ Provide your analysis in clear, structured sections.`).trim();
 
     function gatherFilters() {
       const limit = Math.max(1, Math.min(200, parseInt(els.limitInput.value, 10) || 20));
+      if (state && state.viewer) {
+        state.viewer.limit = limit;
+      }
       const filters = { limit };
       const speaker = els.speakerSelect.value.trim();
       if (speaker) filters.speakers = [speaker];
@@ -772,18 +888,60 @@ Provide your analysis in clear, structured sections.`).trim();
       return filters;
     }
 
+    function getAnalysisLimit() {
+      const input = els.analysisCountInput;
+      const raw = input ? parseInt(input.value, 10) : NaN;
+      const limit = Math.max(1, Math.min(200, Number.isFinite(raw) ? raw : 50));
+      if (input && Number(input.value) !== limit) {
+        input.value = String(limit);
+      }
+      return limit;
+    }
+
     function updateCountDisplay(count) {
-      els.countNumber.textContent = count;
-      els.countDisplay.classList.add('active');
-      els.countNumber.classList.remove('pulse');
-      void els.countNumber.offsetWidth;
-      els.countNumber.classList.add('pulse');
+      let nextCount = Number.isFinite(count) ? count : 0;
+      if (nextCount < 0) nextCount = 0;
+      state.total = nextCount;
+      state.lastCount = nextCount;
+      if (els.countNumber) {
+        els.countNumber.textContent = nextCount;
+        els.countNumber.classList.remove('pulse');
+        // eslint-disable-next-line no-unused-expressions
+        void els.countNumber.offsetWidth;
+        els.countNumber.classList.add('pulse');
+      }
+      if (els.countDisplay) {
+        els.countDisplay.classList.add('active');
+      }
+      updateTranscriptRangeBanner();
     }
 
     function logEvent(message, level = 'info') {
       const el = createEventElement(message, level);
       els.log.appendChild(el);
       els.log.scrollTop = els.log.scrollHeight;
+    }
+
+    function logFilterSummary(filters, analysisLimit) {
+      if (!filters) return;
+      const summary = [];
+      summary.push(`max=${analysisLimit}`);
+      if (Array.isArray(filters.speakers) && filters.speakers.length) {
+        summary.push(`speaker=${filters.speakers.join(', ')}`);
+      }
+      if (Array.isArray(filters.emotions) && filters.emotions.length) {
+        summary.push(`emotions=${filters.emotions.join(', ')}`);
+      }
+      if (filters.start_date || filters.end_date) {
+        summary.push(`dates=${filters.start_date || 'any'}→${filters.end_date || 'any'}`);
+      }
+      if (filters.keywords) {
+        summary.push(`keywords="${filters.keywords}"`);
+      }
+      if (typeof filters.context_lines === 'number') {
+        summary.push(`context=${filters.context_lines}`);
+      }
+      logEvent(`[Filters] ${summary.join(' • ')}`);
     }
 
     function clearResults() {
@@ -1425,6 +1583,13 @@ Provide your analysis in clear, structured sections.`).trim();
           const response = await api.countTranscripts(filters, { analysisId });
           if (response && typeof response.count === 'number') {
             updateCountDisplay(response.count);
+            if (response.count === 0 && state.transcriptWindow?.transcript_count) {
+              const summary = summarizeWindowRange(state.transcriptWindow);
+              logEvent(
+                `[Analyzer] 0 transcripts match filters. Indexed window ${summary || 'unknown'} (${state.transcriptWindow.transcript_count} total).`,
+                'warning',
+              );
+            }
             return;
           }
         } catch (error) {
@@ -1468,6 +1633,13 @@ Provide your analysis in clear, structured sections.`).trim();
               count += 1;
             });
             updateCountDisplay(count);
+            if (count === 0 && state.transcriptWindow?.transcript_count) {
+              const summary = summarizeWindowRange(state.transcriptWindow);
+              logEvent(
+                `[Analyzer] 0 transcripts match filters. Indexed window ${summary || 'unknown'} (${state.transcriptWindow.transcript_count} total).`,
+                'warning',
+              );
+            }
           } catch (fallbackError) {
             console.error('[Analyzer] count fallback failed', fallbackError);
             updateCountDisplay(0);
@@ -1501,14 +1673,19 @@ Provide your analysis in clear, structured sections.`).trim();
     }
 
     function addResultCard({ index, total, response, item }) {
+      const label = (item && (item.label || item.Label)) || null;
+      const titleText = label ? `Statement ${label} (${index} of ${total})` : `Statement ${index} of ${total}`;
       const card = document.createElement('div');
       card.className = 'analyzer-result-card';
       card.dataset.index = String(index);
       card.innerHTML = `
         <div class="analyzer-result-header">
           <div>
-            <h4>Statement ${index} of ${total}</h4>
-            <p class="text-muted">Speaker: ${item.speaker || 'Unknown'} • Emotion: ${item.emotion || 'n/a'}</p>
+            <h4>${titleText}</h4>
+            <p class="text-muted">
+              ${label ? `<span class="badge badge-label">${label}</span>` : ''}
+              Speaker: ${item.speaker || 'Unknown'} • Emotion: ${item.emotion || 'n/a'}
+            </p>
           </div>
           <div class="analyzer-result-metadata">
             ${item.created_at ? `<span>${new Date(item.created_at).toLocaleString()}</span>` : ''}
@@ -1540,6 +1717,9 @@ Provide your analysis in clear, structured sections.`).trim();
 
     async function runStreamingAnalysis() {
       const filters = gatherFilters();
+      const analysisLimit = getAnalysisLimit();
+      filters.limit = Math.min(analysisLimit, filters.limit || analysisLimit);
+      logFilterSummary(filters, analysisLimit);
       if (!els.prompt.value.trim()) {
         showToast('Prompt Required', 'Please enter an analysis prompt before running.', 'error');
         return;
@@ -1554,7 +1734,7 @@ Provide your analysis in clear, structured sections.`).trim();
       els.progress.hidden = false;
       els.progressDetail.textContent = 'Preparing analysis...';
       setRunning(true);
-      logEvent('Creating analysis job...');
+      logEvent('Connecting to Gemma stream...');
 
       try {
         const payload = {
@@ -1562,18 +1742,14 @@ Provide your analysis in clear, structured sections.`).trim();
           custom_prompt: els.prompt.value.trim(),
           max_tokens: 512,
           temperature: 0.4,
+          max_statements: analysisLimit,
           analysis_id: state.analysisId,
         };
-        const response = await api.startGemmaAnalyzeJob(payload, { analysisId: state.analysisId });
-        if (!response || !response.job_id) {
-          throw new Error('Job creation failed');
-        }
-        const jobId = response.job_id;
-        logEvent(`Job ${jobId} created. Connecting to Gemma stream...`);
         if (state.eventSource) {
           state.eventSource.close();
         }
-        const streamUrl = api.buildURL(`/gemma/analyze/stream/${jobId}?analysis_id=${encodeURIComponent(state.analysisId)}`);
+        const encoded = encodePayload(payload);
+        const streamUrl = api.buildURL(`/gemma/analyze/stream/inline/start?payload=${encoded}&analysis_id=${encodeURIComponent(state.analysisId)}`);
         const es = new EventSource(streamUrl, { withCredentials: true });
         state.eventSource = es;
 
@@ -1585,6 +1761,9 @@ Provide your analysis in clear, structured sections.`).trim();
               state.completed = 0;
               els.progressDetail.textContent = `Found ${state.total} statements`;
               logEvent(`Streaming analysis started (${state.total} statements)`);
+            }
+            if (typeof data.max_statements === 'number') {
+              logEvent(`Server enforcing ${data.max_statements} statement limit`);
             }
             if (data.message) {
               const level = data.message.toLowerCase().includes('fallback') ? 'warning' : 'info';
@@ -1738,6 +1917,9 @@ Provide your analysis in clear, structured sections.`).trim();
 
     async function runQuickSummary() {
       const filters = gatherFilters();
+      const analysisLimit = getAnalysisLimit();
+      filters.limit = Math.min(analysisLimit, filters.limit || analysisLimit);
+      logFilterSummary(filters, analysisLimit);
       if (!els.prompt.value.trim()) {
         showToast('Prompt Required', 'Please enter an analysis prompt before running.', 'error');
         return;
@@ -1755,6 +1937,7 @@ Provide your analysis in clear, structured sections.`).trim();
           custom_prompt: els.prompt.value.trim(),
           max_tokens: 1024,
           temperature: 0.3,
+          max_statements: analysisLimit,
         }, { analysisId: state.analysisId });
         if (response && response.success) {
           els.quickSummaryText.textContent = response.analysis || 'No analysis returned.';
@@ -2273,6 +2456,13 @@ Provide your analysis in clear, structured sections.`).trim();
         control.addEventListener('keyup', () => { updateCount(); /* no immediate refresh for typing */ });
       });
 
+      if (els.analysisCountInput) {
+        els.analysisCountInput.addEventListener('change', () => {
+          const limit = getAnalysisLimit();
+          logEvent(`[Filters] Analysis limit set to ${limit} statements`);
+        });
+      }
+
       els.emotionAll.addEventListener('change', () => {
         const checked = els.emotionAll.checked;
         els.emotionChecks.forEach((cb) => {
@@ -2292,6 +2482,22 @@ Provide your analysis in clear, structured sections.`).trim();
           updateCount();
           refreshDb(true);
         });
+      });
+
+      window.addEventListener('gemmaEmotionFiltersChanged', (event) => {
+        const payload = Array.isArray(event.detail) ? event.detail : [];
+        if (!payload.length) {
+          els.emotionAll.checked = true;
+          els.emotionChecks.forEach((cb) => (cb.checked = true));
+        } else {
+          const selected = new Set(payload);
+          els.emotionChecks.forEach((cb) => {
+            cb.checked = selected.has(cb.value);
+          });
+          els.emotionAll.checked = els.emotionChecks.every((cb) => cb.checked);
+        }
+        updateCount();
+        refreshDb(true);
       });
 
       els.resetPrompt.addEventListener('click', () => {
@@ -2373,6 +2579,7 @@ Provide your analysis in clear, structured sections.`).trim();
     }
 
     bindEvents();
+    refreshTranscriptWindow();
 
     const activePresetBtn = els.dateButtons.find((btn) => btn.dataset.active === 'true');
     if (activePresetBtn) {

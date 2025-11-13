@@ -31,6 +31,12 @@ def get_vram_usage() -> dict:
     return {"used_mb": 0, "total_mb": 0, "free_mb": 0}
 
 
+def require_gpu(vram: dict) -> None:
+    """Skip tests gracefully when no supported GPU is detected."""
+    if vram.get("total_mb", 0) <= 0:
+        pytest.skip("GPU memory not detected (nvidia-smi returned 0 MB)")
+
+
 class TestGemmaVRAM:
     """Test Gemma VRAM usage with different configurations"""
     
@@ -42,6 +48,7 @@ class TestGemmaVRAM:
         Measure baseline VRAM (before Gemma loads to GPU)
         """
         vram = get_vram_usage()
+        require_gpu(vram)
         print(f"\n✓ Baseline VRAM: {vram['used_mb']} MB / {vram['total_mb']} MB")
         print(f"  Free VRAM: {vram['free_mb']} MB")
         
@@ -56,6 +63,7 @@ class TestGemmaVRAM:
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Get baseline
             vram_before = get_vram_usage()
+            require_gpu(vram_before)
             
             # Trigger Gemma request (loads to GPU)
             resp = await client.post(
@@ -74,6 +82,7 @@ class TestGemmaVRAM:
             
             # Get VRAM during inference
             vram_during = get_vram_usage()
+            require_gpu(vram_during)
             
             print(f"\n✓ VRAM with 64k context:")
             print(f"  Before: {vram_before['used_mb']} MB")
@@ -113,6 +122,7 @@ class TestGemmaVRAM:
                 
                 # Measure VRAM
                 vram = get_vram_usage()
+                require_gpu(vram)
                 vram_readings.append(vram['used_mb'])
                 
                 time.sleep(1)
@@ -134,8 +144,6 @@ class TestGemmaVRAM:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
-
-
 
 
 

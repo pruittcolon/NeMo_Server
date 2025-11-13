@@ -45,13 +45,52 @@ def generate_secrets():
     else:
         print("⏭  postgres_user already exists (skipping)")
     
-    # 4. JWT secret for inter-service auth
-    if not (secrets_dir / "jwt_secret").exists():
-        jwt_secret = secrets.token_urlsafe(32)
-        secrets_map['jwt_secret'] = jwt_secret
-        print("✓ Generated jwt_secret")
-    else:
-        print("⏭  jwt_secret already exists (skipping)")
+    # 4. JWT secrets for inter-service auth (primary/previous + legacy fallback)
+    primary_path = secrets_dir / "jwt_secret_primary"
+    primary_value = None
+    if primary_path.exists():
+        try:
+            primary_value = primary_path.read_text().strip() or None
+        except Exception:
+            primary_value = None
+        if primary_value:
+            print("⏭  jwt_secret_primary already exists (skipping)")
+        else:
+            print("⚠️  jwt_secret_primary exists but is empty; regenerating")
+    if not primary_value:
+        primary_value = secrets.token_urlsafe(32)
+        secrets_map['jwt_secret_primary'] = primary_value
+        print("✓ Generated jwt_secret_primary")
+    
+    previous_path = secrets_dir / "jwt_secret_previous"
+    previous_value = None
+    if previous_path.exists():
+        try:
+            previous_value = previous_path.read_text().strip() or None
+        except Exception:
+            previous_value = None
+        if previous_value:
+            print("⏭  jwt_secret_previous already exists (leave as-is for rotation)")
+        else:
+            print("⚠️  jwt_secret_previous exists but is empty; seeding from primary")
+    if not previous_value:
+        secrets_map['jwt_secret_previous'] = primary_value
+        print("✓ Seeded jwt_secret_previous with current primary (update during rotation)")
+    
+    legacy_path = secrets_dir / "jwt_secret"
+    legacy_value = None
+    if legacy_path.exists():
+        try:
+            legacy_value = legacy_path.read_text().strip() or None
+        except Exception:
+            legacy_value = None
+        if legacy_value:
+            print("⏭  legacy jwt_secret already exists (skipping)")
+        else:
+            print("⚠️  legacy jwt_secret exists but is empty; writing primary value")
+    if legacy_value is None:
+        secrets_map['jwt_secret'] = primary_value
+        print("✓ Generated legacy jwt_secret (matches primary)")
     
     # 5. Gateway users database encryption key (Phase 6)
     if not (secrets_dir / "users_db_key").exists():

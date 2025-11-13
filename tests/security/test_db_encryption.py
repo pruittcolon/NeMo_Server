@@ -5,20 +5,31 @@ Verifies SQLCipher encryption is working correctly
 
 import os
 import sqlite3
-import pytest
+import sys
 import tempfile
 from pathlib import Path
 
-# Add parent to path
-import sys
+import pytest
+
+# Ensure shared modules are importable when tests run from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from shared.crypto.db_encryption import EncryptedDatabase, create_encrypted_db
+from shared.crypto.db_encryption import (
+    EncryptedDatabase,
+    SQLCIPHER_AVAILABLE,
+    create_encrypted_db,
+)
+
+requires_sqlcipher = pytest.mark.skipif(
+    not SQLCIPHER_AVAILABLE,
+    reason="SQLCipher not installed; encryption-only tests skipped",
+)
 
 
 class TestDatabaseEncryption:
     """Test database encryption with SQLCipher"""
     
+    @requires_sqlcipher
     def test_encrypted_db_creation(self):
         """
         Test creating an encrypted database
@@ -49,6 +60,7 @@ class TestDatabaseEncryption:
             # Verify file exists
             assert os.path.exists(db_path)
     
+    @requires_sqlcipher
     def test_encryption_prevents_direct_read(self):
         """
         Test that encrypted database cannot be read without key
@@ -74,6 +86,7 @@ class TestDatabaseEncryption:
             finally:
                 conn.close()
     
+    @requires_sqlcipher
     def test_wrong_key_fails(self):
         """
         Test that wrong encryption key fails to open database
@@ -128,7 +141,6 @@ class TestDatabaseEncryption:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
-
 
 
 

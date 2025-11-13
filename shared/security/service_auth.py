@@ -11,12 +11,100 @@ import hashlib
 import json
 import base64
 import logging
-from typing import Optional, Dict, Any, Tuple
+import secrets
+from typing import Optional, Dict, Any, Tuple, List, Sequence
 from fastapi import HTTPException, Header, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _is_test_mode() -> bool:
+    return os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def _add_base64_padding(value: str) -> str:
+    return value + ("=" * (-len(value) % 4))
+
+
+def _normalize_secret_value(raw: str, allow_short: bool = False) -> bytes:
+    candidate = (raw or "").strip()
+    if not candidate:
+        raise ValueError("JWT secret is empty")
+    # Try base64/urlsafe base64 first
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            decoded = decoder(_add_base64_padding(candidate))
+            if decoded and (len(decoded) >= 32 or allow_short):
+                return decoded
+        except Exception:
+            continue
+    # Fallback to UTF-8 bytes
+    data = candidate.encode("utf-8")
+    if len(data) < 32 and not allow_short:
+        raise ValueError("JWT secret must be at least 32 bytes")
+    return data
+
+
+def _looks_like_default_secret(raw: str) -> bool:
+    return raw.strip() == "dev_jwt_secret"
+
+
+def load_service_jwt_keys(service_name: str) -> List[Tuple[str, bytes]]:
+    """
+    Load primary/previous JWT secrets for the given service.
+
+    Returns:
+        List of (kid, key_bytes) tuples, primary first.
+    """
+    from shared.security.secrets import get_secret
+
+    test_mode = _is_test_mode()
+    raw_entries: List[Tuple[str, str]] = []
+    for kid, secret_name in (("k1", "jwt_secret_primary"), ("k0", "jwt_secret_previous")):
+        value = get_secret(secret_name)
+        if value:
+            raw_entries.append((kid, value))
+    if not raw_entries:
+        fallback = get_secret("jwt_secret")
+        if fallback:
+            raw_entries.append(("legacy", fallback))
+
+    keys: List[Tuple[str, bytes]] = []
+    for idx, (kid, value) in enumerate(raw_entries):
+        try:
+            key_bytes = _normalize_secret_value(value, allow_short=test_mode)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid JWT secret '{kid}' for {service_name}: {exc}") from exc
+        kid_label = kid or f"k{idx+1}"
+        keys.append((kid_label, key_bytes))
+
+    if not keys:
+        if test_mode:
+            temp = secrets.token_bytes(32)
+            keys.append(("ephemeral", temp))
+            logger.warning(
+                "[SERVICE-AUTH] %s starting without jwt_secret; generated ephemeral test key",
+                service_name,
+            )
+        else:
+            raise RuntimeError(f"[SERVICE-AUTH] {service_name} missing jwt_secret and TEST_MODE disabled")
+
+    if not test_mode:
+        for kid, raw_value in raw_entries:
+            if _looks_like_default_secret(raw_value):
+                raise RuntimeError(
+                    f"[SERVICE-AUTH] {service_name} configured with insecure default jwt_secret; "
+                    "provide a strong secret via docker secrets or env"
+                )
+
+    logger.info(
+        "[SERVICE-AUTH] Loaded %s JWT key(s) for %s",
+        len(keys),
+        service_name,
+    )
+    return keys
 
 # Optional Redis import (fallback to in-memory if unavailable)
 try:
@@ -94,18 +182,59 @@ class ServiceAuth:
     JWTs are signed with HMAC-SHA256
     """
     
-    def __init__(self, service_id: str, service_secret: str):
+    def __init__(self, service_id: str, service_secret):
         """
         Initialize service auth
         
         Args:
             service_id: Unique service identifier
-            service_secret: Service secret key (from Docker secrets)
+            service_secret: Service secret material (string/bytes or list of (kid, key))
         """
         self.service_id = service_id
-        self.service_secret = service_secret.encode('utf-8')
-        
+        self._keys = self._normalize_keys(service_secret)
+        self._primary = self._keys[0]
         logger.info(f"Service auth initialized for: {service_id}")
+
+    @staticmethod
+    def _normalize_keys(service_secret) -> List[Tuple[str, bytes]]:
+        def ensure_bytes(value) -> bytes:
+            if isinstance(value, bytes):
+                return value
+            if isinstance(value, str):
+                return value.encode("utf-8")
+            raise TypeError("JWT key must be bytes or str")
+
+        if isinstance(service_secret, Sequence) and not isinstance(service_secret, (str, bytes, bytearray)):
+            normalized: List[Tuple[str, bytes]] = []
+            for idx, entry in enumerate(service_secret):
+                if isinstance(entry, tuple):
+                    kid, key = entry
+                elif isinstance(entry, dict):
+                    kid = entry.get("kid")
+                    key = entry.get("key")
+                else:
+                    raise TypeError("JWT key entries must be tuple or dict")
+                if key is None:
+                    raise TypeError("JWT key entry missing 'key'")
+                key_bytes = ensure_bytes(key)
+                kid_label = (kid or f"k{idx+1}")
+                normalized.append((kid_label, key_bytes))
+            if not normalized:
+                raise ValueError("No JWT keys provided")
+            return normalized
+
+        # Backward compatibility: single secret string
+        key_bytes = ensure_bytes(service_secret)
+        return [("legacy", key_bytes)]
+
+    @staticmethod
+    def _sign(payload_b64: str, key: bytes) -> str:
+        signature = hmac.new(
+            key,
+            payload_b64.encode(),
+            hashlib.sha256
+        ).digest()
+        return base64.urlsafe_b64encode(signature).decode().rstrip('=')
     
     def create_token(self, expires_in: int = 300, aud: str = "internal") -> str:
         """
@@ -132,6 +261,8 @@ class ServiceAuth:
             "expires_at": now + expires_in,
             "aud": aud,
         }
+        if self._primary[0]:
+            payload["kid"] = self._primary[0]
         
         logger.debug(f"🔐 JWT CREATE: service={self.service_id} aud={aud} jti={request_id[:12]}... expires_in={expires_in}s")
         
@@ -140,12 +271,7 @@ class ServiceAuth:
         payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode().rstrip('=')
         
         # Create signature
-        signature = hmac.new(
-            self.service_secret,
-            payload_b64.encode(),
-            hashlib.sha256
-        ).digest()
-        signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip('=')
+        signature_b64 = self._sign(payload_b64, self._primary[1])
         
         # Combine into JWT
         token = f"{payload_b64}.{signature_b64}"
@@ -184,28 +310,35 @@ class ServiceAuth:
             
             payload_b64, signature_b64 = parts
             
-            # Verify signature
-            expected_signature = hmac.new(
-                self.service_secret,
-                payload_b64.encode(),
-                hashlib.sha256
-            ).digest()
-            expected_signature_b64 = base64.urlsafe_b64encode(expected_signature).decode().rstrip('=')
-            
-            if not hmac.compare_digest(signature_b64, expected_signature_b64):
-                logger.error("🔴 JWT VERIFY FAILED: Signature mismatch")
-                raise ValueError("Invalid signature")
-            
-            logger.debug("✅ JWT signature valid")
-            
-            # Decode payload
-            # Add padding if needed
+            # Decode payload (needed to inspect kid for key selection)
+            payload_b64_original = payload_b64
             padding = len(payload_b64) % 4
             if padding:
                 payload_b64 += '=' * (4 - padding)
             
             payload_json = base64.urlsafe_b64decode(payload_b64).decode()
             payload = json.loads(payload_json)
+            kid = payload.get("kid")
+
+            # Verify signature across candidate keys
+            candidate_keys = self._keys
+            if kid:
+                matches = [entry for entry in self._keys if entry[0] == kid]
+                if matches:
+                    candidate_keys = matches
+
+            matched_key = None
+            for candidate in candidate_keys:
+                expected_signature_b64 = self._sign(payload_b64_original, candidate[1])
+                if hmac.compare_digest(signature_b64, expected_signature_b64):
+                    matched_key = candidate
+                    break
+
+            if not matched_key:
+                logger.error("🔴 JWT VERIFY FAILED: Signature mismatch")
+                raise ValueError("Invalid signature")
+
+            logger.debug("✅ JWT signature valid (kid=%s)", kid or matched_key[0])
             
             jti_short = str(payload.get('request_id', payload.get('jti', '')))[:12]
             logger.debug(f"✅ JWT payload decoded: service={payload.get('service_id')} jti={jti_short}... aud={payload.get('aud')}")
@@ -279,7 +412,7 @@ class ServiceAuthMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app,
-        service_secret: str,
+        service_secret,
         exempt_paths: list = None,
         enabled: bool = True
     ):
@@ -293,7 +426,7 @@ class ServiceAuthMiddleware(BaseHTTPMiddleware):
             enabled: Whether auth is enabled (disable for TEST_MODE)
         """
         super().__init__(app)
-        self.service_secret = service_secret.encode('utf-8')
+        self._verifier = ServiceAuth("__middleware__", service_secret)
         self.exempt_paths = exempt_paths or ["/health", "/docs", "/openapi.json"]
         self.enabled = enabled
         
@@ -325,9 +458,7 @@ class ServiceAuthMiddleware(BaseHTTPMiddleware):
         
         # Verify token
         try:
-            # Create temporary auth instance for verification
-            temp_auth = ServiceAuth("", self.service_secret.decode())
-            payload = temp_auth.verify_token(token)
+            payload = self._verifier.verify_token(token)
             
             # Store service_id in request state
             request.state.service_id = payload['service_id']
@@ -347,7 +478,7 @@ class ServiceAuthMiddleware(BaseHTTPMiddleware):
 _service_auths: Dict[str, ServiceAuth] = {}
 
 
-def get_service_auth(service_id: str, service_secret: str) -> ServiceAuth:
+def get_service_auth(service_id: str, service_secret) -> ServiceAuth:
     """
     Get or create service auth instance
     
@@ -361,10 +492,4 @@ def get_service_auth(service_id: str, service_secret: str) -> ServiceAuth:
     if service_id not in _service_auths:
         _service_auths[service_id] = ServiceAuth(service_id, service_secret)
     return _service_auths[service_id]
-
-
-
-
-
-
 

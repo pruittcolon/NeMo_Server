@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 import json
+import re
+import re
 
 def print_section(title):
     """Print section header"""
@@ -23,6 +25,8 @@ def check_secrets():
     secrets_dir = base_dir / "docker" / "secrets"
     
     required_secrets = [
+        "jwt_secret_primary",
+        "jwt_secret_previous",
         "jwt_secret",
         "session_key",
         "postgres_user",
@@ -34,6 +38,7 @@ def check_secrets():
     ]
     
     all_exist = True
+    test_mode = os.getenv("TEST_MODE", "false").strip().lower() in {"1", "true", "yes"}
     for secret in required_secrets:
         secret_file = secrets_dir / secret
         if secret_file.exists():
@@ -41,6 +46,9 @@ def check_secrets():
             perms = oct(secret_file.stat().st_mode)[-3:]
             if perms in {"600", "640", "644"}:
                 print(f"  ✅ {secret:25s} ({size:4d} bytes)")
+                if secret == "huggingface_token" and size == 0 and not test_mode:
+                    print("  ❌ huggingface_token is empty but TEST_MODE=false")
+                    all_exist = False
             else:
                 print(f"  ❌ {secret:25s} (perms: {perms}, expected 644)")
                 all_exist = False
@@ -49,6 +57,40 @@ def check_secrets():
             all_exist = False
     
     return all_exist
+
+
+def check_docker_env():
+    """Ensure docker/.env does not contain real secrets."""
+    print_section("Phase 1: docker/.env Hygiene")
+    base_dir = Path(__file__).parent.parent
+    env_path = base_dir / "docker" / ".env"
+    if not env_path.exists():
+        print("  ✅ docker/.env not present (preferred)")
+        return True
+
+    content = env_path.read_text()
+    status = True
+    hf_line = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key == "HUGGINGFACE_TOKEN":
+            hf_line = line
+            if value:
+                print("  ❌ HUGGINGFACE_TOKEN must be blank in docker/.env (use docker/secrets instead)")
+                status = False
+            else:
+                print("  ✅ HUGGINGFACE_TOKEN placeholder is blank")
+
+        if re.search(r"hf_[A-Za-z0-9]{20,}", value or ""):
+            print(f"  ❌ Potential Hugging Face token detected in docker/.env line: {line}")
+            status = False
+
+    if hf_line is None:
+        print("  ⚠️  HUGGINGFACE_TOKEN key not found in docker/.env (add placeholder for clarity)")
+    return status
 
 def check_compose_config():
     """Verify docker-compose.yml has proper security config"""
@@ -179,6 +221,7 @@ def main():
     
     results = {
         "Docker Secrets (Phase 5)": check_secrets(),
+        "docker/.env Hygiene": check_docker_env(),
         "Compose Configuration (Phase 4 & 5)": check_compose_config(),
         "JWT Enforcement (Phase 3)": check_jwt_enforcement(),
         "Gateway Security (Phase 1 & 2)": check_gateway_security(),

@@ -14,5 +14,4 @@ torch==2.3.1
 numpy==1.26.4
 
 # Encrypted Database
-pysqlcipher3==1.0.4
-pysqlcipher3==1.0.4
+pysqlcipher3==1.2.0

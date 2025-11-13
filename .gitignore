@@ -176,6 +176,9 @@ site/
 *.backup
 *.bak
 *~
+*.tar.gz
+GOD_Backup.bundle
+GOD_Backup_worktree.tar.gz
 
 # Flutter/Dart (for EvenDemoApp)
 # ============================================================================
@@ -197,5 +200,8 @@ build/
 !docker/faiss_index/.gitkeep
 !docker/rag_instance/.gitkeep
 !docker/gateway_instance/.gitkeep
+
+# Generated reports
+tv_audit_report*.json
 
 # Security - DO NOT COMMIT

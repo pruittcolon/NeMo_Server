@@ -9,43 +9,108 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 from contextlib import asynccontextmanager
 import logging
+import inspect
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from llama_cpp import Llama
 import httpx
 import sys
 
+from gemma_analyzer import GemmaAnalyzer
+
 # Add shared modules to path
 sys.path.insert(0, '/app')
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Configure logging (stdout)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+logger = logging.getLogger("gemma")
 
 # Configuration
 GEMMA_MODEL_PATH = os.getenv("GEMMA_MODEL_PATH", "/app/models/gemma-3-4b-it-UD-Q4_K_XL.gguf")
 GEMMA_GPU_LAYERS = int(os.getenv("GEMMA_GPU_LAYERS", "25"))  # Increased for 64k context
-GEMMA_CONTEXT_SIZE = int(os.getenv("GEMMA_CONTEXT_SIZE", "65536"))  # 64k context
+GEMMA_CONTEXT_SIZE = int(os.getenv("GEMMA_CONTEXT_SIZE", "8192"))  # Default 8k context; override via env
 GEMMA_BATCH_SIZE = int(os.getenv("GEMMA_BATCH_SIZE", "512"))
 JWT_ONLY = os.getenv("JWT_ONLY", "false").lower() in {"1", "true", "yes"}
 GPU_COORDINATOR_URL = os.getenv("GPU_COORDINATOR_URL", "http://gpu-coordinator:8002")
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://rag-service:8004")
+DEFAULT_REPEAT_PENALTY = float(os.getenv("GEMMA_REPEAT_PENALTY", "1.2"))
+DEFAULT_REPEAT_LAST_N = int(os.getenv("GEMMA_REPEAT_LAST_N", "256"))
+DEFAULT_PENALIZE_NL = os.getenv("GEMMA_PENALIZE_NL", "true").lower() in {"1", "true", "yes"}
+DEFAULT_MIROSTAT = int(os.getenv("GEMMA_MIROSTAT", "2"))
+DEFAULT_MIROSTAT_TAU = float(os.getenv("GEMMA_MIROSTAT_TAU", "5.0"))
+DEFAULT_MIROSTAT_ETA = float(os.getenv("GEMMA_MIROSTAT_ETA", "0.1"))
+DEFAULT_STOP_SEQUENCES = [
+    token.strip()
+    for token in os.getenv("GEMMA_DEFAULT_STOP", "").split(",")
+    if token.strip()
+]
+
+try:
+    _LLAMA_CALL_KWARGS = set(inspect.signature(Llama.__call__).parameters.keys())
+except Exception:
+    _LLAMA_CALL_KWARGS = set()
+
+
+def _llama_supports_kwarg(name: str) -> bool:
+    return not _LLAMA_CALL_KWARGS or name in _LLAMA_CALL_KWARGS
 
 # Global model instance
 gemma_model: Optional[Llama] = None
 model_on_gpu: bool = False
 service_auth = None
+gemma_analyzer: Optional[GemmaAnalyzer] = None
 
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+def merge_stop_sequences(requested: Optional[List[str]]) -> List[str]:
+    stops: List[str] = list(DEFAULT_STOP_SEQUENCES)
+    if requested:
+        for token in requested:
+            token = (token or "").strip()
+            if token and token not in stops:
+                stops.append(token)
+    return stops
+
+
+def decoding_kwargs_from_request(
+    *,
+    repeat_penalty: Optional[float] = None,
+    repeat_last_n: Optional[int] = None,
+    penalize_nl: Optional[bool] = None,
+    mirostat: Optional[int] = None,
+    mirostat_tau: Optional[float] = None,
+    mirostat_eta: Optional[float] = None,
+) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+
+    rp = DEFAULT_REPEAT_PENALTY if repeat_penalty is None else repeat_penalty
+    if rp is not None and _llama_supports_kwarg("repeat_penalty"):
+        kwargs["repeat_penalty"] = rp
+
+    rl = DEFAULT_REPEAT_LAST_N if repeat_last_n is None else repeat_last_n
+    if rl and rl > 0 and _llama_supports_kwarg("repeat_last_n"):
+        kwargs["repeat_last_n"] = rl
+
+    penalize_newlines = DEFAULT_PENALIZE_NL if penalize_nl is None else penalize_nl
+    if _llama_supports_kwarg("penalize_nl"):
+        kwargs["penalize_nl"] = penalize_newlines
+
+    mirostat_mode = DEFAULT_MIROSTAT if mirostat is None else mirostat
+    if mirostat_mode and _llama_supports_kwarg("mirostat"):
+        kwargs["mirostat"] = mirostat_mode
+        if _llama_supports_kwarg("mirostat_tau"):
+            kwargs["mirostat_tau"] = DEFAULT_MIROSTAT_TAU if mirostat_tau is None else mirostat_tau
+        if _llama_supports_kwarg("mirostat_eta"):
+            kwargs["mirostat_eta"] = DEFAULT_MIROSTAT_ETA if mirostat_eta is None else mirostat_eta
+
+    return kwargs
+
 
 def get_service_headers(expires_in: int = 60) -> Dict[str, str]:
     """Get service authentication headers (JWT only)."""
@@ -222,6 +287,34 @@ class ServiceAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=401, content={"detail": "Invalid service token"})
 
 
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Adds request_id, analysis_id, and structured access logs with latency."""
+    async def dispatch(self, request: Request, call_next):
+        import time
+        req_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:12]
+        analysis_id = request.headers.get("X-Analysis-Id") or request.query_params.get("analysis_id")
+        start = time.monotonic()
+        path = request.url.path
+        method = request.method
+        try:
+            response = await call_next(request)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            try:
+                response.headers["X-Request-Id"] = req_id
+            except Exception:
+                pass
+            logger.info(
+                f"[ACCESS] {method} {path} {response.status_code} rid={req_id} analysis_id={analysis_id or '-'} {duration_ms}ms"
+            )
+            return response
+        except Exception as exc:  # noqa: BLE001
+            duration_ms = int((time.monotonic() - start) * 1000)
+            logger.error(
+                f"[ERROR] {method} {path} rid={req_id} analysis_id={analysis_id or '-'} {duration_ms}ms err={exc}"
+            )
+            raise
+
+
 # Lifespan context manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -231,14 +324,15 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 80)
     
     # Initialize service auth (Phase 3)
-    global service_auth
+    global service_auth, gemma_analyzer
     try:
-        from shared.security.secrets import get_secret
-        from shared.security.service_auth import get_service_auth
-        jwt_secret = get_secret("jwt_secret", default="dev_jwt_secret")
-        if jwt_secret:
-            service_auth = get_service_auth(service_id="gemma-service", service_secret=jwt_secret)
-            logger.info("✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected)")
+        from shared.security.service_auth import get_service_auth, load_service_jwt_keys
+        jwt_keys = load_service_jwt_keys("gemma-service")
+        service_auth = get_service_auth(service_id="gemma-service", service_secret=jwt_keys)
+        logger.info(
+            "✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected, keys=%s)",
+            len(jwt_keys),
+        )
     except Exception as e:
         logger.error(f"❌ JWT service auth initialization failed: {e}")
         raise
@@ -248,10 +342,11 @@ async def lifespan(app: FastAPI):
     logger.info("[GEMMA] � Loading on CPU (background mode)...")
     logger.info("[GEMMA] Call /warmup endpoint to move to GPU for fast inference")
     load_model_cpu()
+    gemma_analyzer = GemmaAnalyzer(rag_url=RAG_SERVICE_URL)
     logger.info("[GEMMA] ✅ Loaded on CPU successfully!")
     logger.info("Gemma AI Service started successfully (CPU background mode)")
     logger.info("=" * 80)
-    
+
     yield
     
     # Shutdown
@@ -272,6 +367,7 @@ app = FastAPI(
 
 # Add JWT middleware (Phase 2: Permissive)
 app.add_middleware(ServiceAuthMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 # ============================================================================
 # REQUEST MODELS
@@ -283,6 +379,12 @@ class GenerateRequest(BaseModel):
     temperature: float = 0.7
     top_p: float = 0.9
     stop: Optional[List[str]] = None
+    repeat_penalty: Optional[float] = None
+    repeat_last_n: Optional[int] = None
+    penalize_nl: Optional[bool] = None
+    mirostat: Optional[int] = None
+    mirostat_tau: Optional[float] = None
+    mirostat_eta: Optional[float] = None
 
 class ChatMessage(BaseModel):
     role: str
@@ -295,6 +397,19 @@ class ChatRequest(BaseModel):
     top_p: float = 0.9
     context: Optional[List[Dict[str, Any]]] = None
     stop: Optional[List[str]] = None
+    repeat_penalty: Optional[float] = None
+    repeat_last_n: Optional[int] = None
+    penalize_nl: Optional[bool] = None
+    mirostat: Optional[int] = None
+    mirostat_tau: Optional[float] = None
+    mirostat_eta: Optional[float] = None
+
+
+class GemmaAnalyzeRequest(BaseModel):
+    filters: Dict[str, Any] = Field(default_factory=dict)
+    custom_prompt: Optional[str] = None
+    max_tokens: int = 1024
+    temperature: float = 0.3
 
 
 class RAGChatRequest(BaseModel):
@@ -312,6 +427,13 @@ class RAGChatRequest(BaseModel):
     bias_emotions: Optional[List[str]] = None
     use_memories: bool = False
     include_memories_top_k: int = 3
+    stop: Optional[List[str]] = None
+    repeat_penalty: Optional[float] = None
+    repeat_last_n: Optional[int] = None
+    penalize_nl: Optional[bool] = None
+    mirostat: Optional[int] = None
+    mirostat_tau: Optional[float] = None
+    mirostat_eta: Optional[float] = None
 
 # ============================================================================
 # ROUTES
@@ -459,137 +581,193 @@ async def warmup_gpu():
     return response_payload
 
 
-@app.post("/generate")
-async def generate_text(
-    request: GenerateRequest
+async def run_llm_task(
+    task_prefix: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    *,
+    top_p: float = 0.9,
+    stop: Optional[List[str]] = None,
+    decoding_overrides: Optional[Dict[str, Any]] = None,
 ):
-    """
-    Generate text from prompt
-    Uses GPU coordinator for exclusive GPU access
-    """
     if gemma_model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    task_id = f"gemma-gen-{uuid.uuid4().hex[:12]}"
-    
+
+    task_id = f"{task_prefix}-{uuid.uuid4().hex[:12]}"
     logger.info("=" * 80)
-    logger.info(f"🔄 [GENERATE] Task {task_id} started")
-    logger.info(f"🔄 [GENERATE] Prompt: {request.prompt[:100]}...")
-    logger.info(f"🔄 [GENERATE] Max tokens: {request.max_tokens}, Temp: {request.temperature}")
-    
+    logger.info(f"🔄 [TASK {task_id}] Prompt preview: {prompt[:100]}...")
+    logger.info(f"🔄 [TASK {task_id}] Max tokens: {max_tokens}, Temp: {temperature}")
+
     gpu_slot_acquired = False
+    using_cpu_fallback = False
     try:
-        # Request GPU from coordinator
         logger.info(f"📡 [TASK {task_id}] Requesting GPU slot from coordinator...")
         async with httpx.AsyncClient(timeout=30.0) as client:
             coord_response = await client.post(
                 f"{GPU_COORDINATOR_URL}/gemma/request",
                 json={
                     "task_id": task_id,
-                    "messages": [{"role": "user", "content": request.prompt}],
-                    "max_tokens": request.max_tokens,
-                    "temperature": request.temperature
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
                 },
-                headers=get_service_headers()
+                headers=get_service_headers(),
             )
-            
             if coord_response.status_code != 200:
                 logger.error(f"❌ [TASK {task_id}] Failed to acquire GPU slot: {coord_response.status_code}")
                 raise HTTPException(status_code=503, detail="Failed to acquire GPU slot from coordinator")
-            
-            logger.info(f"✅ [TASK {task_id}] GPU slot acquired")
         gpu_slot_acquired = True
-        
-        # Model should already be on GPU from warmup call
-        # If not, move it now (but this will be slower)
-        using_cpu_fallback = False
+
         if not model_on_gpu:
-            logger.warning(f"⚠️ [TASK {task_id}] Model not on GPU! Did you forget to call /warmup first?")
+            logger.warning(f"⚠️ [TASK {task_id}] Model not on GPU! Attempting warmup...")
             try:
                 move_model_to_gpu()
                 logger.info(f"🚀 [TASK {task_id}] Moved to GPU, executing inference...")
             except Exception as gpu_error:
                 logger.warning(f"⚠️ [TASK {task_id}] GPU load failed, using CPU: {gpu_error}")
-                logger.info(f"🐌 [TASK {task_id}] Executing inference on CPU (slow)...")
                 using_cpu_fallback = True
-                # Release GPU slot since we're using CPU
                 try:
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         await client.post(
                             f"{GPU_COORDINATOR_URL}/gemma/release/{task_id}",
                             json={"error": "GPU unavailable - using CPU"},
-                            headers=get_service_headers()
+                            headers=get_service_headers(),
                         )
-                    logger.info(f"🔓 [TASK {task_id}] Released GPU slot (using CPU instead)")
                     gpu_slot_acquired = False
                 except Exception as release_error:
                     logger.error(f"❌ Failed to release GPU slot: {release_error}")
         else:
             logger.info(f"🚀 [TASK {task_id}] Executing inference on GPU (already warmed up)...")
-        
-        # Execute inference
-        response = gemma_model(
-            request.prompt,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            stop=request.stop or [],
-            echo=False,
-        )
-        
+
+        stop_sequences = merge_stop_sequences(stop)
+        llama_kwargs: Dict[str, Any] = {
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stop": stop_sequences,
+            "echo": False,
+        }
+        if decoding_overrides:
+            llama_kwargs.update(
+                decoding_kwargs_from_request(
+                    repeat_penalty=decoding_overrides.get("repeat_penalty"),
+                    repeat_last_n=decoding_overrides.get("repeat_last_n"),
+                    penalize_nl=decoding_overrides.get("penalize_nl"),
+                    mirostat=decoding_overrides.get("mirostat"),
+                    mirostat_tau=decoding_overrides.get("mirostat_tau"),
+                    mirostat_eta=decoding_overrides.get("mirostat_eta"),
+                )
+            )
+        else:
+            llama_kwargs.update(decoding_kwargs_from_request())
+
+        response = gemma_model(**llama_kwargs)
+        usage = response.get("usage", {})
+        model_name = response.get("model", "gemma-3-4b-it")
         result = {
             "text": response["choices"][0]["text"],
-            "tokens_generated": response["usage"]["completion_tokens"],
+            "tokens_generated": usage.get("completion_tokens"),
             "task_id": task_id,
-            "mode": "cpu" if using_cpu_fallback else "gpu"
+            "mode": "cpu" if using_cpu_fallback else "gpu",
+            "usage": usage,
+            "model": model_name,
         }
-        
-        logger.info(f"✅ [TASK {task_id}] Inference complete - Generated {result['tokens_generated']} tokens")
-        logger.info(f"📝 [TASK {task_id}] Response preview: {result['text'][:200]}...")
-        
-        # Move model back to CPU to free VRAM for transcription
+
         try:
             move_model_to_cpu()
             logger.info(f"💾 [TASK {task_id}] Model back to CPU, VRAM freed")
         except Exception as cpu_error:
             logger.warning(f"⚠️ [TASK {task_id}] Failed to move back to CPU: {cpu_error}")
-        
-        # Release GPU slot back to coordinator (only if we acquired it)
-        if not using_cpu_fallback:
+
+        if not using_cpu_fallback and gpu_slot_acquired:
             logger.info(f"🔓 [TASK {task_id}] Releasing GPU slot...")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(
                     f"{GPU_COORDINATOR_URL}/gemma/release/{task_id}",
                     json={"result": result},
-                headers=get_service_headers()
-            )
-            logger.info(f"✅ [TASK {task_id}] GPU slot released, model in CPU background mode")
+                    headers=get_service_headers(),
+                )
             gpu_slot_acquired = False
         else:
-            logger.info(f"✅ [TASK {task_id}] Complete (GPU slot already released, used CPU)")
+            logger.info(f"✅ [TASK {task_id}] Complete (GPU slot already released or CPU fallback)")
 
+        logger.info(f"✅ [TASK {task_id}] Inference complete - Generated {result.get('tokens_generated')} tokens")
+        logger.info(f"📝 [TASK {task_id}] Response preview: {result['text'][:200]}...")
         logger.info("=" * 80)
-
         return result
 
     except Exception as e:
         logger.error(f"❌ [TASK {task_id}] Error: {e}")
         logger.error("=" * 80)
-        
-        # Release GPU on error
         try:
             if gpu_slot_acquired:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     await client.post(
                         f"{GPU_COORDINATOR_URL}/gemma/release/{task_id}",
                         json={"result": {"error": str(e)}},
-                        headers=get_service_headers()
+                        headers=get_service_headers(),
                     )
-        except:
+        except Exception:
             pass
-        
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/generate")
+async def generate_text(request: GenerateRequest):
+    return await run_llm_task(
+        "gemma-gen",
+        request.prompt,
+        request.max_tokens,
+        request.temperature,
+        top_p=request.top_p,
+        stop=request.stop,
+        decoding_overrides={
+            "repeat_penalty": request.repeat_penalty,
+            "repeat_last_n": request.repeat_last_n,
+            "penalize_nl": request.penalize_nl,
+            "mirostat": request.mirostat,
+            "mirostat_tau": request.mirostat_tau,
+            "mirostat_eta": request.mirostat_eta,
+        },
+    )
+
+
+@app.post("/analyze")
+async def gemma_quick_analyze(request: GemmaAnalyzeRequest):
+    if gemma_analyzer is None:
+        raise HTTPException(status_code=503, detail="Analyzer unavailable")
+
+    filters = request.filters or {}
+    try:
+        service_headers = get_service_headers(expires_in=120)
+    except Exception as exc:
+        logger.warning(f"[ANALYZE] Unable to create service headers: {exc}")
+        service_headers = None
+
+    async def _llm(prompt: str, max_tokens: int, temperature: float):
+        return await run_llm_task(
+            "gemma-ana",
+            prompt,
+            max_tokens,
+            temperature,
+        )
+
+    try:
+        return await gemma_analyzer.run_analysis(
+            llm_callable=_llm,
+            filters=filters,
+            custom_prompt=request.custom_prompt,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            service_headers=service_headers,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[ANALYZE] Failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 @app.post("/chat")
 async def chat(
     request: ChatRequest
@@ -670,17 +848,25 @@ async def chat(
         
         logger.info(f"[TASK {task_id}] Executing inference...")
         
-        # Execute inference on GPU
+        stop_sequences = merge_stop_sequences(request.stop)
         llama_kwargs = {
             "prompt": prompt,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
             "echo": False,
+            "stop": stop_sequences,
         }
-
-        if request.stop:
-            llama_kwargs["stop"] = request.stop
+        llama_kwargs.update(
+            decoding_kwargs_from_request(
+                repeat_penalty=request.repeat_penalty,
+                repeat_last_n=request.repeat_last_n,
+                penalize_nl=request.penalize_nl,
+                mirostat=request.mirostat,
+                mirostat_tau=request.mirostat_tau,
+                mirostat_eta=request.mirostat_eta,
+            )
+        )
 
         response = gemma_model(**llama_kwargs)
         
@@ -904,13 +1090,25 @@ async def chat_with_rag(
         else:
             used_gpu = True
 
+        stop_sequences = merge_stop_sequences(request.stop)
         generation_kwargs = {
             "prompt": prompt,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
             "echo": False,
+            "stop": stop_sequences,
         }
+        generation_kwargs.update(
+            decoding_kwargs_from_request(
+                repeat_penalty=request.repeat_penalty,
+                repeat_last_n=request.repeat_last_n,
+                penalize_nl=request.penalize_nl,
+                mirostat=request.mirostat,
+                mirostat_tau=request.mirostat_tau,
+                mirostat_eta=request.mirostat_eta,
+            )
+        )
 
         response = gemma_model(**generation_kwargs)
         answer_text = response["choices"][0]["text"].strip()

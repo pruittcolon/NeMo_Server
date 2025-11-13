@@ -63,9 +63,10 @@ services:
     # Phase 4: Remove host port mapping - internal only
     # ports:
     #   - "8002:8002"
-    # Mount secrets directory to /run/secrets for dev (read-only)
-    volumes:
-      - ./secrets:/run/secrets:ro
+    secrets:
+      - jwt_secret_primary
+      - jwt_secret_previous
+      - jwt_secret
     depends_on:
       redis:
         condition: service_healthy
@@ -100,7 +101,10 @@ services:
       JWT_ONLY: "true"
     volumes:
       - ../models:/app/models:ro
-      - ./secrets:/run/secrets:ro
+    secrets:
+      - jwt_secret_primary
+      - jwt_secret_previous
+      - jwt_secret
     # Phase 4: Remove host port mapping - internal only
     # ports:
     #   - "8001:8001"
@@ -143,13 +147,28 @@ services:
       PARAKEET_CHUNK_DURATION: "300"
       ENABLE_PYANNOTE: "true"
       PYANNOTE_DEVICE: "cuda"
+      DIARIZER_BACKEND: "nemo"
+      SORTFORMER_MODEL: /app/models/diar_sortformer_4spk-v1.nemo
+      SORTFORMER_MAX_SPKS: "4"
+      SORTFORMER_DEVICE: "cuda"
+      DIARIZATION_SPK_MAX: "4"
+      CUDA_LAUNCH_BLOCKING: "1"
+      TORCH_USE_CUDA_DSA: "1"
+      PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:64"
       # PYANNOTE_MAX_SPEAKERS: "2"  # Uncomment to force specific number of speakers
       # Legacy RNNT settings (kept for fallback)
       NEMO_MODEL_NAME: "nvidia/parakeet-rnnt-0.6b"
       HF_HOME: /app/models  # HuggingFace cache directory in image
       JWT_ONLY: "true"
     volumes:
-      - ./secrets:/run/secrets:ro
+      - ../models/diar_sortformer_4spk-v1.nemo:/app/models/diar_sortformer_4spk-v1.nemo:ro
+      - ../services/transcription-service/src:/app/src
+      - ../shared:/app/shared
+    secrets:
+      - jwt_secret_primary
+      - jwt_secret_previous
+      - jwt_secret
+      - huggingface_token
     # Models are pre-downloaded in Docker image during build
     # Phase 4: Remove host port mapping - internal only
     # ports:
@@ -208,9 +227,17 @@ services:
       LOGIN_RATE_LIMIT_LIMIT: "1000"
     volumes:
       - ./gateway_instance:/app/instance
-      - ./secrets:/run/secrets:ro
       # Mount local frontend for live UI updates in dev (read-only)
       - ../frontend:/app/frontend:ro
+      # Mount gateway source + shared modules for hot reload
+      - ../services/api-gateway/src:/app/src:ro
+      - ../shared:/app/shared:ro
+    secrets:
+      - session_key
+      - users_db_key
+      - jwt_secret_primary
+      - jwt_secret_previous
+      - jwt_secret
     read_only: true
     tmpfs:
       - /tmp
@@ -257,12 +284,21 @@ services:
       FAISS_INDEX_PATH: "/app/faiss_index/index.bin"
       HF_HOME: "/app/models"
       JWT_ONLY: "true"
+      EMAIL_ANALYZER_ENABLED: "true"
+      EMAIL_DB_ENCRYPTION: "true"
+      EMAIL_DB_KEY_FILE: /run/secrets/email_db_key
+      EMAIL_DB_PATH: /app/instance/email.db
     volumes:
       - ./rag_instance:/app/instance
       - ./faiss_index:/app/faiss_index
       - ../models:/app/models
       - ../shared:/app/shared
-      - ./secrets:/run/secrets:ro
+    secrets:
+      - jwt_secret_primary
+      - jwt_secret_previous
+      - jwt_secret
+      - rag_db_key
+      - email_db_key
     # Phase 4: Remove host port mapping - internal only
     # ports:
     #   - "8004:8004"
@@ -292,8 +328,10 @@ services:
     environment:
       INSIGHTS_DB_PATH: /app/instance/rag.db
     volumes:
-      - ./rag_instance:/app/instance:ro
+      - ./rag_instance:/app/instance
       - ../shared:/app/shared
+    secrets:
+      - rag_db_key
     depends_on:
       rag-service:
         condition: service_healthy
@@ -316,7 +354,10 @@ services:
       JWT_ONLY: "true"
     volumes:
       - ../models:/app/models:ro
-      - ./secrets:/run/secrets:ro
+    secrets:
+      - jwt_secret_primary
+      - jwt_secret_previous
+      - jwt_secret
     # Phase 4: Remove host port mapping - internal only
     # ports:
     #   - "8005:8005"
@@ -331,6 +372,10 @@ services:
 
 # Phase 5: Define Docker secrets (read from files in docker/secrets/)
 secrets:
+  jwt_secret_primary:
+    file: ./secrets/jwt_secret_primary
+  jwt_secret_previous:
+    file: ./secrets/jwt_secret_previous
   jwt_secret:
     file: ./secrets/jwt_secret
   service_api_key:
@@ -349,6 +394,8 @@ secrets:
     file: ./secrets/redis_password
   huggingface_token:
     file: ./secrets/huggingface_token
+  email_db_key:
+    file: ./secrets/email_db_key
 
 networks:
   nemo_network:

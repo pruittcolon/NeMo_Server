@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Email Gemma Stream Debug</title>
+  <link rel="stylesheet" href="assets/css/main.css?v=2024111201" />
+  <style>
+    body { padding: 1rem; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    #log { border: 1px solid #334155; padding: 1rem; border-radius: 8px; background: #0b1220; color: #e2e8f0; height: 50vh; overflow: auto; }
+    .row { display: flex; gap: .5rem; margin-bottom: .5rem; }
+    input, button { padding: .5rem .75rem; }
+  </style>
+</head>
+<body>
+  <h2>Debug: Email Gemma SSE</h2>
+  <div class="row">
+    <input id="prompt" class="input" placeholder="Prompt (e.g., evaluate customer complaints this week)" style="flex: 1;" />
+    <button id="start">Start</button>
+    <button id="stop">Stop</button>
+  </div>
+  <pre id="log"></pre>
+
+  <script src="assets/js/api.js?v=2024111201"></script>
+  <script src="assets/js/auth.js?v=2024110101"></script>
+  <script>
+    let es = null;
+    function log(msg) {
+      const el = document.getElementById('log');
+      const ts = new Date().toLocaleTimeString();
+      el.textContent = `[${ts}] ${msg}\n` + el.textContent;
+    }
+    async function ensureAuth() {
+      if (typeof Auth !== 'undefined' && Auth.init) {
+        const ok = await Auth.init({ requireAuth: true });
+        if (!ok) return false;
+      }
+      return true;
+    }
+    function encodePayload(obj) {
+      const json = JSON.stringify(obj);
+      let b64 = btoa(unescape(encodeURIComponent(json)));
+      return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    document.getElementById('start').addEventListener('click', async () => {
+      if (!(await ensureAuth())) return;
+      if (es) { try { es.close(); } catch(e){} es = null; }
+      const prompt = document.getElementById('prompt').value.trim() || 'evaluate customer sentiment this week';
+      const payload = encodePayload({ prompt, filters: { match: 'any' }, max_emails: 5 });
+      const url = api.buildURL(`/email/analyze/gemma/stream?payload=${payload}`);
+      log('Opening ' + url);
+      es = new EventSource(url, { withCredentials: true });
+      es.addEventListener('progress', e => log('progress: ' + e.data));
+      es.addEventListener('note', e => log('note: ' + e.data));
+      es.addEventListener('summary', e => log('summary: ' + e.data));
+      es.addEventListener('done', e => { log('done: ' + e.data); es.close(); es = null; });
+      es.onerror = e => { log('error: ' + (e?.message || 'event')); if (es) { try { es.close(); } catch(_){} es = null; } };
+    });
+    document.getElementById('stop').addEventListener('click', () => {
+      if (es) { es.close(); es = null; log('stopped'); }
+    });
+  </script>
+</body>
+</html>
+

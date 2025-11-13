@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: https:;">
   <meta http-equiv="X-Content-Type-Options" content="nosniff">
-  <meta http-equiv="X-Frame-Options" content="DENY">
   <title>Nemo Server - Gemma AI</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -106,10 +105,176 @@
       50% { transform: scale(1.1); }
       100% { transform: scale(1); }
     }
+
+    /* Emotions UI parity */
+    .gemma-filter-panel {
+      background: rgba(15,23,42,0.85);
+      border: 1px solid rgba(148,163,184,0.25);
+      border-radius: 1.25rem;
+      box-shadow: 0 25px 55px rgba(3,7,23,0.6);
+      padding: 1.5rem 1.75rem;
+    }
+    .gemma-filter-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2rem;
+      justify-content: space-between;
+    }
+    .gemma-filter-column {
+      flex: 1 1 280px;
+      min-width: 260px;
+    }
+    .chip-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.8rem;
+      gap: 0.75rem;
+    }
+    .chip-panel-header h4 {
+      margin: 0;
+      font-size: 1rem;
+    }
+    .chip-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      align-items: center;
+    }
+    .chip-group-center {
+      justify-content: center;
+    }
+    .chip-toggle {
+      appearance: none;
+      border: 1px solid var(--chip-color, rgba(148,163,184,0.35));
+      border-radius: 999px;
+      padding: 0.35rem 0.95rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      background: rgba(15,23,42,0.6);
+      color: var(--chip-color, var(--text-secondary));
+      transition: all 0.2s ease;
+      box-shadow: inset 0 0 0 1px rgba(148,163,184,0.15);
+      letter-spacing: 0.02em;
+    }
+    .chip-toggle:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 18px rgba(15,23,42,0.45), 0 0 16px rgba(108,99,241,0.3);
+    }
+    .chip-toggle[aria-pressed="true"] {
+      background: radial-gradient(120% 120% at 20% 30%, rgba(108,99,241,0.4), rgba(108,99,241,0.12));
+      border-color: rgba(108,99,241,0.85);
+      color: #f8fafc;
+      box-shadow: 0 0 18px rgba(108,99,241,0.4), inset 0 0 8px rgba(108,99,241,0.45);
+    }
+    .chip-toggle.chip-all {
+      background: linear-gradient(135deg,#6C63FF,#a78bfa);
+      border: none;
+      color: #0b0f1a;
+      font-weight: 600;
+      box-shadow: 0 12px 24px rgba(108,99,241,0.5);
+    }
+    .gemma-period-filter {
+      text-align: center;
+    }
+    .gemma-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.5rem;
+    }
+    .gemma-stat-card {
+      position: relative;
+      padding: 1.25rem 1.35rem;
+      border-radius: 1.1rem;
+      background: rgba(12,17,31,0.85);
+      border: 1px solid rgba(148,163,184,0.2);
+      box-shadow: 0 18px 38px rgba(3,7,23,0.55);
+      overflow: hidden;
+    }
+    .gemma-stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: var(--stat-accent, var(--primary));
+      border-radius: 999px;
+      opacity: 0.9;
+    }
+    .gemma-stat-card .stat-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: rgba(108,99,241,0.15);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 0.75rem;
+      color: var(--stat-accent, var(--primary));
+    }
+    .gemma-stat-card .stat-value {
+      font-size: 1.9rem;
+      font-weight: 600;
+      margin: 0;
+    }
+    .gemma-stat-card .stat-label {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .gemma-stat-card .stat-hint {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 0.35rem;
+    }
+    .gemma-stat-grid.loading .stat-value {
+      opacity: 0.4;
+      animation: pulse 1.4s ease infinite;
+    }
+    .gemma-confidence-control {
+      margin-top: 1.5rem;
+      padding: 1.25rem 1.5rem;
+      border-radius: 1rem;
+      border: 1px solid rgba(148,163,184,0.25);
+      background: rgba(9,13,24,0.85);
+      box-shadow: inset 0 0 0 1px rgba(148,163,184,0.08);
+    }
+    .gemma-confidence-control .chip-panel-header {
+      margin-bottom: 0.75rem;
+      justify-content: space-between;
+    }
+    .gemma-confidence-control .chip-panel-header span {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #f8fafc;
+    }
+    .gemma-confidence-slider {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .gemma-confidence-slider input[type="range"] {
+      flex: 1;
+    }
+    .gemma-confidence-hint {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-top: 0.5rem;
+    }
+    @media (max-width: 768px) {
+      .gemma-filter-grid {
+        flex-direction: column;
+      }
+      .chip-group-center {
+        justify-content: flex-start;
+      }
+    }
   </style>
 </head>
 <body class="gemma-theme">
-  
+
   <header class="glass-header">
     <div class="container">
       <div class="flex-between">
@@ -125,6 +290,7 @@
           <a href="emotions.html" class="nav-link">Emotions</a>
           <a href="memories.html" class="nav-link">Memories</a>
           <a href="gemma.html" class="nav-link active">AI Insights</a>
+          <a href="email.html" class="nav-link">Email</a>
           <a href="settings.html" class="nav-link">Settings</a>
         </nav>
         
@@ -168,6 +334,87 @@
         <i data-lucide="activity" style="width: 28px; height: 28px; color: var(--warning); margin-bottom: 0.5rem;"></i>
         <div class="stat-value" id="inference-speed">~30 tok/s</div>
         <div class="stat-label">Inference Speed</div>
+      </div>
+    </section>
+
+    <section class="gemma-period-filter fade-in-up delay-150">
+      <div class="chip-group chip-group-center" id="gemma-period-chips">
+        <button type="button" class="chip-toggle" data-gemma-period="today">Today</button>
+        <button type="button" class="chip-toggle" data-gemma-period="week">This Week</button>
+        <button type="button" class="chip-toggle" data-gemma-period="month">This Month</button>
+        <button type="button" class="chip-toggle" data-gemma-period="all">All Time</button>
+      </div>
+    </section>
+
+    <section class="gemma-stat-grid fade-in-up delay-200" id="gemma-stat-grid">
+      <div class="gemma-stat-card" style="--stat-accent:var(--emotion-joy);">
+        <div class="stat-icon">
+          <i data-lucide="smile" style="width:18px;height:18px;"></i>
+        </div>
+        <div class="stat-value" id="gemma-joy-count">0</div>
+        <div class="stat-label">Joy Detected</div>
+        <div class="stat-hint">Updated from analytics</div>
+      </div>
+      <div class="gemma-stat-card" style="--stat-accent:var(--emotion-anger);">
+        <div class="stat-icon">
+          <i data-lucide="frown" style="width:18px;height:18px;"></i>
+        </div>
+        <div class="stat-value" id="gemma-negative-count">0</div>
+        <div class="stat-label">Negative Signals</div>
+        <div class="stat-hint">Anger • Fear • Sadness • Disgust</div>
+      </div>
+      <div class="gemma-stat-card" style="--stat-accent:#7c3aed;">
+        <div class="stat-icon">
+          <i data-lucide="activity" style="width:18px;height:18px;"></i>
+        </div>
+        <div class="stat-value" id="gemma-total-analyzed">0</div>
+        <div class="stat-label">Total Segments</div>
+        <div class="stat-hint" id="gemma-period-label">Selected range</div>
+      </div>
+      <div class="gemma-stat-card" style="--stat-accent:#38bdf8;">
+        <div class="stat-icon">
+          <i data-lucide="wind" style="width:18px;height:18px;"></i>
+        </div>
+        <div class="stat-value" id="gemma-avg-pace">0</div>
+        <div class="stat-label">Avg Pace (WPM)</div>
+        <div class="stat-hint">Speech overlay</div>
+      </div>
+      <div class="gemma-stat-card" style="--stat-accent:#fbbf24;">
+        <div class="stat-icon">
+          <i data-lucide="audio-lines" style="width:18px;height:18px;"></i>
+        </div>
+        <div class="stat-value" id="gemma-avg-pitch">0</div>
+        <div class="stat-label">Avg Pitch (Hz)</div>
+        <div class="stat-hint">Speech overlay</div>
+      </div>
+    </section>
+
+    <section class="glass-card gemma-filter-panel fade-in-up delay-250">
+      <div class="gemma-filter-grid">
+        <div class="gemma-filter-column">
+          <div class="chip-panel-header">
+            <h4>Emotion Layers</h4>
+            <button type="button" class="chip-toggle chip-all" id="gemma-emotion-all">All</button>
+          </div>
+          <div class="chip-group" id="gemma-emotion-chips"></div>
+        </div>
+        <div class="gemma-filter-column">
+          <div class="chip-panel-header">
+            <h4>Speech Overlays</h4>
+            <button type="button" class="chip-toggle chip-all" id="gemma-metric-all">All</button>
+          </div>
+          <div class="chip-group" id="gemma-metric-chips"></div>
+        </div>
+      </div>
+      <div class="gemma-confidence-control">
+        <div class="chip-panel-header">
+          <h4>Emotion Confidence Baseline</h4>
+          <span id="gemma-confidence-label">70%</span>
+        </div>
+        <div class="gemma-confidence-slider">
+          <input type="range" min="50" max="100" step="5" value="70" id="gemma-confidence-range">
+        </div>
+        <p class="gemma-confidence-hint">Used whenever transcripts do not include explicit emotion confidence scores.</p>
       </div>
     </section>
 
@@ -229,6 +476,284 @@
 
   <script>
     lucide.createIcons();
+    
+    const GEMMA_EMOTION_OPTIONS = [
+      { key: 'anger', label: 'Anger', color: 'var(--emotion-anger)' },
+      { key: 'fear', label: 'Fear', color: 'var(--emotion-fear)' },
+      { key: 'joy', label: 'Joy', color: 'var(--emotion-joy)' },
+      { key: 'neutral', label: 'Neutral', color: 'var(--emotion-neutral)' },
+      { key: 'sadness', label: 'Sadness', color: 'var(--emotion-sadness)' },
+      { key: 'surprise', label: 'Surprise', color: 'var(--emotion-surprise)' },
+      { key: 'disgust', label: 'Disgust', color: 'var(--emotion-disgust)' },
+    ];
+
+    const GEMMA_METRIC_OPTIONS = [
+      { key: 'pace_wpm', label: 'Pace', color: '#38bdf8' },
+      { key: 'pitch_mean', label: 'Pitch', color: '#fbbf24' },
+      { key: 'volume_rms', label: 'Volume', color: '#f472b6' },
+      { key: 'volume_peak', label: 'Volume Peak', color: '#fb7185' },
+      { key: 'pause_ms', label: 'Pauses', color: '#14b8a6' },
+      { key: 'word_count', label: 'Words', color: '#facc15' },
+    ];
+
+    const GEMMA_PERIOD_LOOKBACK = { today: 0, week: 6, month: 29, all: null };
+    const GEMMA_PERIOD_LABELS = { today: 'Today', week: 'This Week', month: 'This Month', all: 'All Time' };
+
+    const gemmaInsightsState = {
+      period: 'all',
+      selectedEmotions: new Set(GEMMA_EMOTION_OPTIONS.map((opt) => opt.key)),
+      selectedMetrics: new Set(GEMMA_METRIC_OPTIONS.map((opt) => opt.key)),
+      analytics: null,
+      loading: false,
+    };
+
+    const numberFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+    const GEMMA_DEFAULT_CONFIDENCE = getDefaultConfidencePercent();
+    let gemmaConfidencePercent = GEMMA_DEFAULT_CONFIDENCE;
+    let gemmaConfidenceSlider;
+    let gemmaConfidenceLabel;
+
+    function getDefaultConfidencePercent() {
+      try {
+        if (typeof window !== 'undefined' && typeof window.getEmotionConfidenceBaseline === 'function') {
+          return Math.round(window.getEmotionConfidenceBaseline() * 100);
+        }
+      } catch (_) {
+        /* noop */
+      }
+      return 70;
+    }
+
+    function initGemmaControls() {
+      renderGemmaEmotionChips();
+      renderGemmaMetricChips();
+      bindGemmaPeriodChips();
+      const emotionAllBtn = document.getElementById('gemma-emotion-all');
+      if (emotionAllBtn) {
+        emotionAllBtn.onclick = () => {
+          gemmaInsightsState.selectedEmotions = new Set(GEMMA_EMOTION_OPTIONS.map((opt) => opt.key));
+          renderGemmaEmotionChips();
+          syncAnalyzerEmotionsFromState();
+          refreshGemmaAnalytics();
+        };
+      }
+      const metricAllBtn = document.getElementById('gemma-metric-all');
+      if (metricAllBtn) {
+        metricAllBtn.onclick = () => {
+          gemmaInsightsState.selectedMetrics = new Set(GEMMA_METRIC_OPTIONS.map((opt) => opt.key));
+          renderGemmaMetricChips();
+          refreshGemmaAnalytics();
+        };
+      }
+      initGemmaConfidenceControl();
+      syncAnalyzerEmotionsFromState();
+      return setGemmaPeriod('all', { force: true });
+    }
+
+    function renderGemmaEmotionChips() {
+      const container = document.getElementById('gemma-emotion-chips');
+      if (!container) return;
+      container.innerHTML = GEMMA_EMOTION_OPTIONS.map((opt) => {
+        const active = gemmaInsightsState.selectedEmotions.has(opt.key);
+        return `
+          <button type="button" class="chip-toggle" data-emotion="${opt.key}" aria-pressed="${active}" style="--chip-color:${opt.color};">
+            ${opt.label}
+          </button>
+        `;
+      }).join('');
+      container.querySelectorAll('button[data-emotion]').forEach((btn) => {
+        btn.addEventListener('click', () => toggleGemmaEmotion(btn.dataset.emotion));
+      });
+    }
+
+    function renderGemmaMetricChips() {
+      const container = document.getElementById('gemma-metric-chips');
+      if (!container) return;
+      container.innerHTML = GEMMA_METRIC_OPTIONS.map((opt) => {
+        const active = gemmaInsightsState.selectedMetrics.has(opt.key);
+        return `
+          <button type="button" class="chip-toggle" data-metric="${opt.key}" aria-pressed="${active}" style="--chip-color:${opt.color};">
+            ${opt.label}
+          </button>
+        `;
+      }).join('');
+      container.querySelectorAll('button[data-metric]').forEach((btn) => {
+        btn.addEventListener('click', () => toggleGemmaMetric(btn.dataset.metric));
+      });
+    }
+
+    function initGemmaConfidenceControl() {
+      gemmaConfidenceSlider = document.getElementById('gemma-confidence-range');
+      gemmaConfidenceLabel = document.getElementById('gemma-confidence-label');
+      if (!gemmaConfidenceSlider || !gemmaConfidenceLabel) return;
+      gemmaConfidenceSlider.value = gemmaConfidencePercent;
+      gemmaConfidenceLabel.textContent = `${gemmaConfidencePercent}%`;
+      gemmaConfidenceSlider.addEventListener('input', (event) => {
+        gemmaConfidencePercent = Number(event.target.value);
+        gemmaConfidenceLabel.textContent = `${gemmaConfidencePercent}%`;
+        syncAnalyzerConfidence(gemmaConfidencePercent);
+      });
+      syncAnalyzerConfidence(gemmaConfidencePercent);
+    }
+
+    function syncAnalyzerEmotionsFromState() {
+      if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+      const payload = Array.from(gemmaInsightsState.selectedEmotions || []);
+      window.dispatchEvent(new CustomEvent('gemmaEmotionFiltersChanged', { detail: payload }));
+    }
+
+    function toggleGemmaEmotion(emotion) {
+      if (!emotion) return;
+      const set = gemmaInsightsState.selectedEmotions;
+      if (set.has(emotion)) {
+        set.delete(emotion);
+      } else {
+        set.add(emotion);
+      }
+      if (!set.size) {
+        GEMMA_EMOTION_OPTIONS.forEach((opt) => set.add(opt.key));
+      }
+      renderGemmaEmotionChips();
+      syncAnalyzerEmotionsFromState();
+      refreshGemmaAnalytics();
+    }
+
+    function toggleGemmaMetric(metric) {
+      if (!metric) return;
+      const set = gemmaInsightsState.selectedMetrics;
+      if (set.has(metric)) {
+        set.delete(metric);
+      } else {
+        set.add(metric);
+      }
+      if (!set.size) {
+        GEMMA_METRIC_OPTIONS.forEach((opt) => set.add(opt.key));
+      }
+      renderGemmaMetricChips();
+      refreshGemmaAnalytics();
+    }
+
+    function bindGemmaPeriodChips() {
+      document.querySelectorAll('[data-gemma-period]').forEach((btn) => {
+        btn.addEventListener('click', () => setGemmaPeriod(btn.dataset.gemmaPeriod));
+      });
+    }
+
+    function setGemmaPeriod(period, { force = false } = {}) {
+      if (!period) return;
+      if (!force && gemmaInsightsState.period === period) return;
+      gemmaInsightsState.period = period;
+      document.querySelectorAll('[data-gemma-period]').forEach((btn) => {
+        const isActive = btn.dataset.gemmaPeriod === period;
+        btn.setAttribute('aria-pressed', isActive);
+        btn.classList.toggle('active', isActive);
+      });
+      return refreshGemmaAnalytics();
+    }
+
+    function setGemmaInsightsLoading(isLoading) {
+      const grid = document.getElementById('gemma-stat-grid');
+      gemmaInsightsState.loading = isLoading;
+      if (grid) grid.classList.toggle('loading', !!isLoading);
+    }
+
+    function computeGemmaPeriodRange(period) {
+      if (period === 'all') {
+        return { start: null, end: null };
+      }
+      const lookback = GEMMA_PERIOD_LOOKBACK[period] ?? 6;
+      const now = new Date();
+      const end = now.toISOString().slice(0, 10);
+      const startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - lookback);
+      const start = startDate.toISOString().slice(0, 10);
+      return { start, end };
+    }
+
+    async function refreshGemmaAnalytics() {
+      setGemmaInsightsLoading(true);
+      const { start, end } = computeGemmaPeriodRange(gemmaInsightsState.period);
+      try {
+        const payload = await api.getAnalyticsSignals({
+          start_date: start || undefined,
+          end_date: end || undefined,
+          emotions: Array.from(gemmaInsightsState.selectedEmotions),
+          metrics: Array.from(gemmaInsightsState.selectedMetrics),
+        });
+        gemmaInsightsState.analytics = payload;
+        renderGemmaStatCards(payload?.summary || {});
+      } catch (error) {
+        console.error('[Gemma] Failed to load analytics signals', error);
+        renderGemmaStatCards(null);
+      } finally {
+        setGemmaInsightsLoading(false);
+      }
+    }
+
+    function renderGemmaStatCards(summary) {
+      if (!summary) {
+        setTextContent('gemma-joy-count', '—');
+        setTextContent('gemma-negative-count', '—');
+        setTextContent('gemma-total-analyzed', '—');
+        setTextContent('gemma-avg-pace', '—');
+        setTextContent('gemma-avg-pitch', '—');
+        const label = document.getElementById('gemma-period-label');
+        if (label) {
+          const name = GEMMA_PERIOD_LABELS[gemmaInsightsState.period] || 'Selected';
+          label.textContent = `${name} window`;
+        }
+        return;
+      }
+      const totals = summary?.emotion_totals || {};
+      const joy = totals.joy ?? 0;
+      const negative = (totals.anger || 0) + (totals.fear || 0) + (totals.sadness || 0) + (totals.disgust || 0);
+      const totalAnalyzed = summary?.total_analyzed ?? 0;
+      const avgPace = summary?.avg_pace_wpm ?? null;
+      const avgPitch = summary?.avg_pitch_mean ?? null;
+
+      setTextContent('gemma-joy-count', formatBigNumber(joy));
+      setTextContent('gemma-negative-count', formatBigNumber(negative));
+      setTextContent('gemma-total-analyzed', formatBigNumber(totalAnalyzed));
+      setTextContent('gemma-avg-pace', formatMetricValue(avgPace));
+      setTextContent('gemma-avg-pitch', formatMetricValue(avgPitch));
+
+      const label = document.getElementById('gemma-period-label');
+      if (label) {
+        const name = GEMMA_PERIOD_LABELS[gemmaInsightsState.period] || 'Selected';
+        label.textContent = `${name} window`;
+      }
+    }
+
+    function setTextContent(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function formatBigNumber(value) {
+      if (value === null || value === undefined) return '—';
+      const num = Number(value);
+      if (!Number.isFinite(num)) return '—';
+      return numberFormatter.format(Math.round(num));
+    }
+
+    function formatMetricValue(value) {
+      if (value === null || value === undefined) return '—';
+      const num = Number(value);
+      if (!Number.isFinite(num)) return '—';
+      return Math.round(num);
+    }
+
+    function syncAnalyzerConfidence(percent) {
+      const analyzerRoot = document.querySelector('#gemma-advanced-analyzer');
+      if (!analyzerRoot || percent === null || percent === undefined) return;
+      const slider = analyzerRoot.querySelector('[data-role="emotion-confidence-range"]');
+      const label = analyzerRoot.querySelector('[data-role="emotion-confidence-label"]');
+      if (slider) slider.value = percent;
+      if (label) label.textContent = `${percent}%`;
+      analyzerRoot.querySelectorAll('[data-role="emotion-pill"]').forEach((pill) => {
+        if (pill) pill.textContent = `${percent}%`;
+      });
+    }
 
     // Quick Actions -> Advanced Analyzer (prompt + run quick)
     async function quickAnalysis(type) {
@@ -284,6 +809,8 @@
       // Load GPU stats
       await loadGPUStats();
 
+      await initGemmaControls();
+
       // Make sure the analyzer is ready without extra clicks
       ensureAdvancedAnalysisReady();
     }
@@ -309,6 +836,8 @@
           advancedAnalyzerInstance.refreshCount();
         }
       }
+      syncAnalyzerConfidence(gemmaConfidencePercent);
+      syncAnalyzerEmotionsFromState();
     }
 
     function toggleAdvancedAnalysis() {

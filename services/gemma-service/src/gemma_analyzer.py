@@ -10,18 +10,39 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import inspect
 import httpx
+import logging
 
 
 class GemmaAnalyzer:
     """Handles advanced conversation analysis using Gemma AI"""
     
-    def __init__(self, rag_url: str, data_dir: str = "/app/instance/gemma_responses"):
+    def __init__(
+        self,
+        rag_url: str,
+        data_dir: str = "/app/instance/gemma_responses",
+        default_prompt_template: Optional[str] = None,
+    ):
         self.rag_url = rag_url
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Default comprehensive analysis prompt
-        self.default_prompt_template = """Analyze the following conversation transcripts for communication patterns.
+        self._logger = logging.getLogger(__name__)
+        self.default_prompt_template = self._load_default_prompt(default_prompt_template)
+        # Detect model context window from environment for smarter prompt trimming
+        try:
+            self.model_context_window = int(os.getenv("GEMMA_CONTEXT_SIZE", "2048") or 2048)
+        except Exception:
+            self.model_context_window = 2048
+
+    def _load_default_prompt(self, override: Optional[str]) -> str:
+        """
+        Determine the default prompt template in this precedence order:
+          1. Explicit override passed to the constructor
+          2. Text from GEMMA_ANALYZER_DEFAULT_PROMPT_PATH file (if exists)
+          3. Text from GEMMA_ANALYZER_DEFAULT_PROMPT env variable
+          4. Built-in comprehensive template (legacy default)
+        The template must include {transcripts}; if missing, append one.
+        """
+        built_in = """Analyze the following conversation transcripts for communication patterns.
 
 Focus on identifying:
 1. **Logical Fallacies**: Name any fallacies used (ad hominem, straw man, false dilemma, etc.)
@@ -40,6 +61,31 @@ Transcripts:
 {transcripts}
 
 Provide your analysis in clear, structured sections."""
+        logger = logging.getLogger(__name__)
+        source = "override"
+        if override:
+            template = override
+        else:
+            prompt_path = os.getenv("GEMMA_ANALYZER_DEFAULT_PROMPT_PATH")
+            if prompt_path:
+                candidate = Path(prompt_path)
+                if candidate.is_file():
+                    template = candidate.read_text(encoding="utf-8")
+                    source = f"path:{prompt_path}"
+                else:
+                    template = os.getenv("GEMMA_ANALYZER_DEFAULT_PROMPT")
+                    source = "env:GEMMA_ANALYZER_DEFAULT_PROMPT"
+            else:
+                template = os.getenv("GEMMA_ANALYZER_DEFAULT_PROMPT")
+                source = "env:GEMMA_ANALYZER_DEFAULT_PROMPT"
+            if not template:
+                template = built_in
+                source = "built-in"
+        if "{transcripts}" not in template:
+            template = template.rstrip() + "\n\nTranscripts:\n{transcripts}\n"
+            logger.debug("Appended '{transcripts}' placeholder to default prompt template")
+        logger.info("GemmaAnalyzer default prompt source: %s", source)
+        return template
 
     async def fetch_transcripts(
         self,
@@ -48,45 +94,119 @@ Provide your analysis in clear, structured sections."""
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         limit: int = 20,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        keywords: Optional[str] = None,
+        match: str = "any",
+        search_type: str = "keyword",
+        context_lines: int = 3,
     ) -> List[Dict[str, Any]]:
-        """Fetch transcripts from RAG service with filters"""
-        params = {"limit": limit}
+        """Fetch transcript segments from RAG service using /transcripts/query with graceful fallback."""
+        payload: Dict[str, Any] = {
+            "limit": limit,
+            "offset": 0,
+            "sort_by": "created_at",
+            "order": "desc",
+            "context_lines": max(0, min(int(context_lines or 0), 10)),
+        }
+        if speakers:
+            payload["speakers"] = speakers
+        if emotions:
+            payload["emotions"] = emotions
         if start_date:
-            params["start_date"] = start_date
+            payload["start_date"] = start_date
         if end_date:
-            params["end_date"] = end_date
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{self.rag_url}/transcripts/recent",
-                params=params,
-                headers=headers or {}
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            # Extract transcripts from response
-            transcripts = data.get("transcripts") or data.get("items") or []
-            
-            # Apply filters
-            filtered = []
-            for t in transcripts:
-                # Speaker filter
-                if speakers:
-                    speaker = t.get("speaker") or t.get("primary_speaker") or ""
-                    if not any(s.lower() in speaker.lower() for s in speakers):
+            payload["end_date"] = end_date
+        if keywords:
+            payload["keywords"] = keywords
+            payload["match"] = (match or "any").lower()
+            payload["search_type"] = (search_type or "keyword").lower()
+
+        # Prefer rich query endpoint for precise selection
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{self.rag_url}/transcripts/query",
+                    json=payload,
+                    headers=headers or {},
+                )
+                if resp.status_code == 404:
+                    raise httpx.HTTPStatusError("/transcripts/query not found", request=resp.request, response=resp)
+                resp.raise_for_status()
+                data = resp.json() or {}
+                items = data.get("items") or []
+                self._logger.info("RAG /transcripts/query -> %s items (limit=%s)", len(items), limit)
+                if items:
+                    return items[:limit]
+        except httpx.HTTPStatusError as exc:
+            self._logger.warning("/transcripts/query failed (%s): %s; falling back to /transcripts/recent",
+                                 getattr(exc.response, 'status_code', 'n/a'), str(exc))
+        except Exception as exc:
+            self._logger.warning("/transcripts/query error: %s; falling back to /transcripts/recent", exc)
+
+        # Fallback: use recent transcripts and client-side filtering
+        recent_params = {"limit": max(limit * 5, 50)}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.get(
+                    f"{self.rag_url}/transcripts/recent",
+                    params=recent_params,
+                    headers=headers or {},
+                )
+                r.raise_for_status()
+                data = r.json() or {}
+                transcripts = data.get("transcripts") or []
+        except Exception as exc:
+            self._logger.error("Fallback /transcripts/recent failed: %s", exc)
+            return []
+
+        segs_out: List[Dict[str, Any]] = []
+        speakers_set = {s.lower() for s in (speakers or [])}
+        emotions_set = {e.lower() for e in (emotions or [])}
+        kw_list = [k.strip().lower() for k in (keywords or "").split(",") if k.strip()]
+        require_all = (match or "any").lower() == "all"
+        ctx = max(0, min(int(context_lines or 0), 10))
+        for tr in transcripts:
+            created = tr.get("created_at") or tr.get("timestamp")
+            segs = tr.get("segments") or []
+            for idx, seg in enumerate(segs):
+                sp = (seg.get("speaker") or "").lower()
+                if speakers_set and sp not in speakers_set:
+                    continue
+                emo = (seg.get("emotion") or tr.get("dominant_emotion") or "").lower()
+                if emotions_set and emo not in emotions_set:
+                    continue
+                text_val = (seg.get("text") or "").strip()
+                if kw_list:
+                    hits = [kw for kw in kw_list if kw in text_val.lower()]
+                    if require_all and len(hits) != len(kw_list):
                         continue
-                
-                # Emotion filter
-                if emotions:
-                    emotion = t.get("emotion") or t.get("dominant_emotion") or ""
-                    if emotion.lower() not in [e.lower() for e in emotions]:
+                    if not require_all and not hits:
                         continue
-                
-                filtered.append(t)
-            
-            return filtered[:limit]
+                context_before: List[Dict[str, Any]] = []
+                if ctx:
+                    start_idx = max(0, idx - ctx)
+                    for j in range(start_idx, idx):
+                        prev = segs[j]
+                        context_before.append({
+                            "speaker": prev.get("speaker"),
+                            "text": prev.get("text"),
+                            "emotion": prev.get("emotion") or tr.get("dominant_emotion"),
+                        })
+                segs_out.append({
+                    "segment_id": seg.get("id") or f"fallback-{tr.get('job_id','job')}-{idx}",
+                    "transcript_id": tr.get("id"),
+                    "job_id": tr.get("job_id"),
+                    "speaker": seg.get("speaker"),
+                    "emotion": seg.get("emotion") or tr.get("dominant_emotion"),
+                    "text": text_val,
+                    "created_at": created,
+                    "start_time": seg.get("start_time"),
+                    "end_time": seg.get("end_time"),
+                    "context_before": context_before,
+                })
+                if len(segs_out) >= limit:
+                    return segs_out
+        return segs_out[:limit]
     
     def format_transcripts_for_analysis(self, transcripts: List[Dict[str, Any]]) -> str:
         """Format transcripts into readable text for Gemma"""
@@ -103,6 +223,15 @@ Provide your analysis in clear, structured sections."""
             formatted_lines.append(f"Emotion: {emotion}")
             if timestamp:
                 formatted_lines.append(f"Time: {timestamp}")
+            # Include context_before if provided (segment-level records)
+            context_before = t.get("context_before") or []
+            if isinstance(context_before, list) and context_before:
+                formatted_lines.append("Context before:")
+                for ctx in context_before:
+                    cs = ctx.get("speaker") or "Speaker"
+                    ct = ctx.get("text") or ""
+                    ce = ctx.get("emotion") or ""
+                    formatted_lines.append(f"  - {cs}{' (' + ce + ')' if ce else ''}: {ct}")
             formatted_lines.append(f"Text: {text}")
             
             # Add segments if available
@@ -190,6 +319,7 @@ Provide your analysis in clear, structured sections."""
         """
         start_time = datetime.now()
         
+        self._logger.info("run_analysis filters=%s custom_prompt=%s limit=%s", filters, bool(custom_prompt), filters.get("limit", 20))
         # Fetch transcripts
         transcripts = await self.fetch_transcripts(
             speakers=filters.get("speakers"),
@@ -197,10 +327,15 @@ Provide your analysis in clear, structured sections."""
             start_date=filters.get("start_date"),
             end_date=filters.get("end_date"),
             limit=filters.get("limit", 20),
-            headers=service_headers
+            headers=service_headers,
+            keywords=filters.get("keywords"),
+            match=filters.get("match", "any"),
+            search_type=filters.get("search_type", "keyword"),
+            context_lines=filters.get("context_lines", 3),
         )
         
         if not transcripts:
+            self._logger.warning("No transcripts found for filters=%s", filters)
             return {
                 "success": False,
                 "error": "No transcripts found matching the filters"
@@ -213,8 +348,8 @@ Provide your analysis in clear, structured sections."""
         prompt_template = custom_prompt or self.default_prompt_template
 
         # Safety: ensure prompt + response tokens won't exceed model context window
-        # Estimate tokens by chars/4 (approx). Use conservative default context of 2048.
-        model_context_window = 2048
+        # Estimate tokens by chars/4 (approx). Default to configured context window
+        model_context_window = self.model_context_window
         try:
             # allow callers to override by placing 'model_context' in filters
             if filters.get("model_context"):
@@ -236,8 +371,15 @@ Provide your analysis in clear, structured sections."""
                 "[TRUNCATED: only the most recent transcripts included]\n" + trimmed_transcripts
             )
             final_prompt = prompt_template.replace("{transcripts}", trimmed_transcripts)
+            self._logger.info(
+                "Prompt trimmed from %s tokens to %s (context window %s)",
+                estimated_tokens,
+                allowed_prompt_tokens,
+                model_context_window,
+            )
         else:
             final_prompt = tentative_prompt
+            self._logger.debug("Prompt size %s tokens within context window %s", estimated_tokens, model_context_window)
 
         # Call Gemma
         response = llm_callable(
@@ -260,7 +402,13 @@ Provide your analysis in clear, structured sections."""
         
         # Calculate processing time
         processing_time = (datetime.now() - start_time).total_seconds()
-        
+        self._logger.info(
+            "Gemma run complete model=%s tokens=%s processing_time=%.2fs",
+            model_name,
+            response.get("usage", {}).get("completion_tokens", 0),
+            processing_time,
+        )
+
         # Save response to file
         saved_file = self.save_response(
             analysis_type="custom" if custom_prompt else "comprehensive",

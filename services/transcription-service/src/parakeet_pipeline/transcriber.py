@@ -13,6 +13,11 @@ from nemo.collections.asr.models import EncDecCTCModelBPE
 from .chunker import ConvertedAudio, convert_audio_to_wav, split_audio_into_chunks
 from .diarizer import PyannoteDiarizer, assign_speakers, SpeakerSegment
 
+try:  # Optional dependency
+    from .nemo_sortformer import NemoSortformerDiarizer
+except Exception:  # pragma: no cover - fallback if NeMo extras missing
+    NemoSortformerDiarizer = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,17 +66,20 @@ class ParakeetPipeline:
         self.model.eval()
         logger.info("Parakeet model loaded successfully")
 
-        self.diarizer: Optional[PyannoteDiarizer] = None
+        self.diarizer_backend = os.getenv("DIARIZER_BACKEND", "pyannote").lower()
+        self.diarizer: Optional[object] = None
         if enable_diarization:
-            self.diarizer = PyannoteDiarizer(
-                device=diarization_device,
-                num_speakers=diarization_num_speakers,
-            )
-            if self.diarizer and self.diarizer.pipeline:
-                logger.info("Pyannote diarization enabled")
+            if self.diarizer_backend == "nemo":
+                self.diarizer = self._init_nemo_diarizer(diarization_num_speakers)
             else:
-                logger.info("Pyannote diarization unavailable; continuing without it")
-                self.diarizer = None
+                self.diarizer = self._init_pyannote_diarizer(
+                    diarization_device, diarization_num_speakers
+                )
+
+        if self.diarizer:
+            logger.info("Diarization backend enabled: %s", self.diarizer_backend)
+        else:
+            logger.info("Diarization disabled or unavailable (requested backend=%s)", self.diarizer_backend)
 
     # ------------------------------------------------------------------#
     # Device management
@@ -194,6 +202,45 @@ class ParakeetPipeline:
         # Ensure segments are ordered and contiguous
         segments.sort(key=lambda seg: seg.start)
         return segments
+
+    # ------------------------------------------------------------------#
+    # Diarizer initialisation helpers
+    # ------------------------------------------------------------------#
+    def _init_pyannote_diarizer(
+        self,
+        device: str,
+        num_speakers: Optional[int],
+    ) -> Optional[PyannoteDiarizer]:
+        diarizer = PyannoteDiarizer(
+            device=device,
+            num_speakers=num_speakers,
+        )
+        if diarizer and diarizer.pipeline:
+            return diarizer
+        logger.warning("Pyannote diarization unavailable (missing token or dependency)")
+        return None
+
+    def _init_nemo_diarizer(self, num_speakers: Optional[int]) -> Optional[object]:
+        if NemoSortformerDiarizer is None:
+            logger.warning("NeMo diarizer unavailable (nemo_toolkit not installed)")
+            return None
+
+        model_path = os.getenv("SORTFORMER_MODEL")
+        if not model_path:
+            logger.warning("SORTFORMER_MODEL env var not set; cannot enable NeMo diarizer")
+            return None
+
+        max_spks = num_speakers or int(os.getenv("SORTFORMER_MAX_SPKS", "4"))
+        device = os.getenv("SORTFORMER_DEVICE", "cuda")
+        try:
+            return NemoSortformerDiarizer(
+                nemo_model_path=model_path,
+                max_speakers=max_spks,
+                device=device,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to initialise NeMo diarizer: %s", exc)
+            return None
 
 
 def _normalise_speaker_label(label: Optional[str]) -> Optional[str]:

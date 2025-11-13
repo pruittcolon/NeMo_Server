@@ -5,12 +5,16 @@ import pytest
 
 
 def _is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
-    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
-        sock.settimeout(timeout)
-        try:
-            return sock.connect_ex((host, port)) == 0
-        except OSError:
-            return False
+    try:
+        with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+            sock.settimeout(timeout)
+            try:
+                return sock.connect_ex((host, port)) == 0
+            except OSError:
+                return False
+    except PermissionError:
+        # Some sandboxes disallow raw socket creation; treat as "closed" so tests skip gracefully.
+        return False
 
 
 @pytest.fixture(scope="session")

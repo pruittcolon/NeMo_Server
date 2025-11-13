@@ -99,12 +99,13 @@ async def lifespan(app: FastAPI):
     
     # Initialize service auth (Phase 3)
     try:
-        from shared.security.secrets import get_secret
-        from shared.security.service_auth import get_service_auth
-        jwt_secret = get_secret("jwt_secret", default="dev_jwt_secret")
-        if jwt_secret:
-            service_auth = get_service_auth(service_id="emotion-service", service_secret=jwt_secret)
-            logger.info("✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected)")
+        from shared.security.service_auth import get_service_auth, load_service_jwt_keys
+        jwt_keys = load_service_jwt_keys("emotion-service")
+        service_auth = get_service_auth(service_id="emotion-service", service_secret=jwt_keys)
+        logger.info(
+            "✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected, keys=%s)",
+            len(jwt_keys),
+        )
     except Exception as e:
         logger.error(f"❌ JWT service auth initialization failed: {e}")
         raise

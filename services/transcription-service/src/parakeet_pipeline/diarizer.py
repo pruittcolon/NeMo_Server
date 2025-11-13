@@ -10,6 +10,8 @@ from typing import List, Optional
 import torch
 
 logger = logging.getLogger(__name__)
+if logger.level > logging.INFO:
+    logger.setLevel(logging.INFO)
 
 
 @dataclass
@@ -119,6 +121,19 @@ def assign_speakers(
             overlaps.sort(key=lambda item: item[0], reverse=True)
             _, best_speaker = overlaps[0]
             segment.speaker = best_speaker
+            logger.info(
+                "Assigned speaker %s to segment %.2f-%.2f with overlaps %s",
+                best_speaker,
+                getattr(segment, "start", -1),
+                getattr(segment, "end", -1),
+                overlaps,
+            )
+        else:
+            logger.info(
+                "No diarization overlap found for segment %.2f-%.2f",
+                getattr(segment, "start", -1),
+                getattr(segment, "end", -1),
+            )
 
 
 class ParakeetSegmentProtocol:

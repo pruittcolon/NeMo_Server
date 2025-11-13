@@ -13,7 +13,7 @@ import threading
 import re
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
@@ -30,6 +30,7 @@ from shared.crypto.db_encryption import create_encrypted_db
 
 # Add shared modules to path
 sys.path.insert(0, '/app')
+sys.path.insert(0, '/app/src')
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +48,7 @@ DB_PATH = Path(os.getenv("DB_PATH", "/app/instance/rag.db"))
 FAISS_INDEX_PATH = Path(os.getenv("FAISS_INDEX_PATH", "/app/faiss_index/index.bin"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 dimension
+EMAIL_ANALYZER_ENABLED = os.getenv("EMAIL_ANALYZER_ENABLED", "true").lower() in {"1", "true", "yes"}
 
 # Global state
 rag_service = None
@@ -205,7 +207,30 @@ class RAGService:
         """Initialize SQLite database schema"""
         with self.lock:
             conn = self._db.connect()
-            conn.row_factory = sqlite3.Row
+            try:
+                module_name = getattr(conn.__class__, "__module__", "")
+                if module_name.startswith("pysqlcipher3") or module_name.startswith("sqlcipher3"):
+                    import sys as _sys
+                    mod = _sys.modules.get(module_name)
+                    row_cls = getattr(mod, 'Row', None)
+                    if row_cls is not None:
+                        conn.row_factory = row_cls
+                    else:
+                        def _dict_factory(cursor, row):
+                            out = {}
+                            desc = getattr(cursor, "description", None) or []
+                            for idx, col in enumerate(desc):
+                                name = col[0] if isinstance(col, (list, tuple)) else str(col)
+                                out[name] = row[idx]
+                            return out
+                        conn.row_factory = _dict_factory
+                else:
+                    conn.row_factory = sqlite3.Row
+            except Exception:
+                try:
+                    conn.row_factory = sqlite3.Row
+                except Exception:
+                    pass
             cur = conn.cursor()
             
             # Transcript records (full transcript metadata)
@@ -312,7 +337,6 @@ class RAGService:
             
             conn.commit()
             conn.commit()
-            conn.close()
             try:
                 self.db_path.chmod(0o600)
             except Exception:
@@ -329,7 +353,6 @@ class RAGService:
                 cur = conn.cursor()
                 cur.execute("PRAGMA table_info(transcript_segments)")
                 rows = cur.fetchall()
-                conn.close()
             columns = set()
             for row in rows:
                 try:
@@ -349,7 +372,38 @@ class RAGService:
 
     def _connect(self) -> sqlite3.Connection:
         conn = self._db.connect()
-        conn.row_factory = sqlite3.Row
+        # Use sqlite3.Row for std sqlite; for SQLCipher connections use a dict row
+        try:
+            module_name = getattr(conn.__class__, "__module__", "")
+            if module_name.startswith("pysqlcipher3") or module_name.startswith("sqlcipher3"):
+                class _CompatRow(dict):
+                    __slots__ = ("_sequence",)
+
+                    def __init__(self, cursor_description, row_tuple):
+                        ordered = []
+                        description = cursor_description or []
+                        for idx, col in enumerate(description):
+                            name = col[0] if isinstance(col, (list, tuple)) else str(col)
+                            ordered.append((name, row_tuple[idx]))
+                        super().__init__(ordered)
+                        self._sequence = tuple(row_tuple)
+
+                    def __getitem__(self, key):
+                        if isinstance(key, int):
+                            return self._sequence[key]
+                        return super().__getitem__(key)
+
+                def _compat_factory(cursor, row):
+                    return _CompatRow(cursor.description, row)
+
+                conn.row_factory = _compat_factory
+            else:
+                conn.row_factory = sqlite3.Row
+        except Exception:
+            try:
+                conn.row_factory = sqlite3.Row
+            except Exception:
+                pass
         return conn
 
     @staticmethod
@@ -384,8 +438,41 @@ class RAGService:
             return value
         return value[:max_chars].rstrip() + "…"
 
-    def _build_segment_filters(self, filters: Dict[str, Any]) -> Tuple[List[str], List[Any]]:
-        conditions: List[str] = ["ts.text IS NOT NULL", "ts.text != ''"]
+    @staticmethod
+    def _value_from_row(row: Any, key: str, default: Any = None) -> Any:
+        if row is None:
+            return default
+        try:
+            if isinstance(row, dict):
+                return row.get(key, default)
+            if hasattr(row, "keys") and key in row.keys():  # sqlite3.Row
+                return row[key]
+            return row[key]
+        except Exception:
+            return default
+
+    @staticmethod
+    def _format_timestamp_value(value: Any) -> Optional[str]:
+        if value in (None, "", 0):
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value))
+            return dt.isoformat()
+        except Exception:
+            try:
+                numeric = float(value)
+                # Heuristic: treat large values as ms
+                if numeric > 1e12:
+                    numeric /= 1000.0
+                return datetime.utcfromtimestamp(numeric).isoformat() + "Z"
+            except Exception:
+                text = str(value).strip()
+                return text or None
+
+    def _build_segment_filters(self, filters: Dict[str, Any], *, include_text_constraint: bool = True) -> Tuple[List[str], List[Any]]:
+        conditions: List[str] = []
+        if include_text_constraint:
+            conditions.extend(["ts.text IS NOT NULL", "ts.text != ''"])
         params: List[Any] = []
 
         speakers = self._normalize_filter_list(filters.get("speakers"))
@@ -463,7 +550,9 @@ class RAGService:
             logger.info(f"[RAG] Semantic count for '{query}' -> {count}")
             return count
 
-        conditions, params = self._build_segment_filters(filters)
+        include_text_constraint = bool(keywords) or search_type == "segments"
+        conditions, params = self._build_segment_filters(filters, include_text_constraint=include_text_constraint)
+        join_type = "JOIN" if include_text_constraint else "LEFT JOIN"
 
         try:
             with self.lock:
@@ -471,8 +560,9 @@ class RAGService:
                 cur = conn.cursor()
                 where_clause = " AND ".join(conditions) if conditions else "1=1"
                 logger.info(
-                    "[RAG] count filters=%s where=%s params=%s",
+                    "[RAG] count filters=%s join=%s where=%s params=%s",
                     {k: filters.get(k) for k in ("limit", "speakers", "emotions", "start_date", "end_date", "keywords", "search_type", "match")},
+                    join_type,
                     where_clause,
                     params,
                 )
@@ -480,13 +570,12 @@ class RAGService:
                     f"""
                     SELECT COUNT(*)
                     FROM transcript_segments ts
-                    JOIN transcript_records tr ON ts.transcript_id = tr.id
+                    {join_type} transcript_records tr ON ts.transcript_id = tr.id
                     WHERE {where_clause}
                     """,
                     params,
                 )
                 row = cur.fetchone()
-                conn.close()
             count = int(row[0]) if row else 0
             logger.info(f"[RAG] SQL transcript count -> {count}")
             return count
@@ -586,7 +675,6 @@ class RAGService:
                         "context_before": context,
                         "context_after": context_after,
                     })
-                conn.close()
 
             def _timestamp_value(value: Any) -> float:
                 if value in (None, ""):
@@ -616,7 +704,9 @@ class RAGService:
             total = len(items)
             return {"items": items, "count": len(items), "total": total}
 
-        conditions, params = self._build_segment_filters(filters)
+        include_text_constraint = bool(keywords) or search_type == "segments"
+        conditions, params = self._build_segment_filters(filters, include_text_constraint=include_text_constraint)
+        join_type = "JOIN" if include_text_constraint else "LEFT JOIN"
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         total = self.count_transcripts_filtered(filters)
 
@@ -637,8 +727,9 @@ class RAGService:
                 conn = self._connect()
                 cur = conn.cursor()
                 logger.info(
-                    "[RAG] query filters=%s where=%s params=%s limit=%s offset=%s",
+                    "[RAG] query filters=%s join=%s where=%s params=%s limit=%s offset=%s",
                     {k: filters.get(k) for k in ("limit", "speakers", "emotions", "start_date", "end_date", "keywords", "search_type", "match")},
+                    join_type,
                     where_clause,
                     params,
                     limit,
@@ -650,7 +741,7 @@ class RAGService:
                            ts.transcript_id, ts.seq, ts.start_time, ts.end_time,
                            tr.job_id, tr.created_at
                     FROM transcript_segments ts
-                    JOIN transcript_records tr ON ts.transcript_id = tr.id
+                    {join_type} transcript_records tr ON ts.transcript_id = tr.id
                     WHERE {where_clause}
                     ORDER BY {order_by}
                     LIMIT ? OFFSET ?
@@ -721,7 +812,6 @@ class RAGService:
                         "context_after": context_after,
                     })
 
-                conn.close()
 
             logger.info(f"[RAG] query_transcripts_filtered -> {len(items)} items (total={total}) sort_by={sort_by} order={order} limit={limit} offset={offset}")
             has_more = (offset + len(items)) < total if isinstance(total, int) else (len(items) == limit)
@@ -739,25 +829,98 @@ class RAGService:
             logger.error(f"[RAG] Failed to query transcripts: {e}")
             return {"items": [], "count": 0, "total": 0}
 
+    def get_transcript_time_range(self) -> Dict[str, Any]:
+        """Return dataset coverage stats so the UI can guide users when filters return zero rows."""
+        with self.lock:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT
+                    MIN(created_at) AS min_created_at,
+                    MAX(created_at) AS max_created_at,
+                    COUNT(*) AS transcript_count
+                FROM transcript_records
+                """
+            )
+            transcripts_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT
+                    MIN(created_at) AS min_segment_at,
+                    MAX(created_at) AS max_segment_at,
+                    COUNT(*) AS segment_count
+                FROM transcript_segments
+                """
+            )
+            segments_row = cur.fetchone()
+
+        transcript_count = int(self._value_from_row(transcripts_row, "transcript_count", 0) or 0)
+        segment_count = int(self._value_from_row(segments_row, "segment_count", 0) or 0)
+        start = self._format_timestamp_value(self._value_from_row(transcripts_row, "min_created_at"))
+        end = self._format_timestamp_value(self._value_from_row(transcripts_row, "max_created_at"))
+        seg_start = self._format_timestamp_value(self._value_from_row(segments_row, "min_segment_at"))
+        seg_end = self._format_timestamp_value(self._value_from_row(segments_row, "max_segment_at"))
+
+        payload = {
+            "status": "ok",
+            "transcript_count": transcript_count,
+            "segment_count": segment_count,
+            "transcript_range": {"start": start, "end": end},
+            "segment_range": {"start": seg_start, "end": seg_end},
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        logger.info(
+            "[RAG] Dataset window: transcripts=%s segments=%s range=%s→%s",
+            transcript_count,
+            segment_count,
+            start,
+            end,
+        )
+        return payload
+
     def get_unique_speakers(self) -> List[str]:
-        """Return sorted list of unique speakers across transcript segments."""
+        """Return sorted list of unique speakers across stored transcripts."""
         try:
             with self.lock:
                 conn = self._connect()
                 cur = conn.cursor()
+                speakers: Set[str] = set()
+
+                # Primary source: individual transcript segments
                 cur.execute(
                     """
                     SELECT DISTINCT speaker
                     FROM transcript_segments
                     WHERE speaker IS NOT NULL AND speaker != ''
-                    ORDER BY LOWER(speaker) ASC
                     """
                 )
-                rows = cur.fetchall()
-                conn.close()
-            speakers = [row[0] for row in rows if row[0]]
-            logger.info(f"[RAG] get_unique_speakers -> {len(speakers)} speakers")
-            return speakers
+                speakers.update(row[0] for row in cur.fetchall() if row[0])
+
+                # Some legacy databases stored primary speaker on transcript_records
+                cur.execute("PRAGMA table_info(transcript_records)")
+                transcript_columns = {row[1] if isinstance(row, tuple) else row["name"] for row in cur.fetchall()}
+                if "primary_speaker" in transcript_columns:
+                    try:
+                        cur.execute(
+                            """
+                            SELECT DISTINCT primary_speaker
+                            FROM transcript_records
+                            WHERE primary_speaker IS NOT NULL AND primary_speaker != ''
+                            """
+                        )
+                        speakers.update(row[0] for row in cur.fetchall() if row[0])
+                    except sqlite3.OperationalError as exc:
+                        logger.warning(
+                            "[RAG] primary_speaker column reported but query failed (%s); skipping fallback",
+                            exc,
+                        )
+
+
+            sorted_speakers = sorted(speakers, key=lambda s: s.lower())
+            logger.info(f"[RAG] get_unique_speakers -> {len(sorted_speakers)} speakers")
+            return sorted_speakers
         except Exception as e:
             logger.error(f"[RAG] Failed to get speakers: {e}")
             return []
@@ -832,7 +995,6 @@ class RAGService:
                 ),
             )
             conn.commit()
-            conn.close()
         logger.info(f"[RAG] Archived analysis artifact {artifact_id} (analysis_id={analysis_id})")
         try:
             self._replace_artifact_chunks(artifact_id, body, index_body=index_body)
@@ -870,7 +1032,6 @@ class RAGService:
                 cur = conn.cursor()
                 cur.execute("DELETE FROM analysis_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
                 conn.commit()
-                conn.close()
             return
 
         semantic_enabled = index_body and os.getenv("RAG_ENABLE_SEMANTIC", "true").lower() in {"1", "true", "yes"}
@@ -909,7 +1070,6 @@ class RAGService:
                     ),
                 )
             conn.commit()
-            conn.close()
 
     def list_artifact_chunks(self, artifact_id: str, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
         if not artifact_id:
@@ -930,7 +1090,6 @@ class RAGService:
                 (artifact_id, limit, offset),
             )
             rows = cur.fetchall()
-            conn.close()
         items = [
             {
                 "chunk_id": row[0],
@@ -973,7 +1132,6 @@ class RAGService:
             cur = conn.cursor()
             cur.execute(query_sql, params)
             rows = cur.fetchall()
-            conn.close()
         return [
             {
                 "artifact_id": row[0],
@@ -1014,17 +1172,36 @@ class RAGService:
                     (limit, offset),
                 )
             rows = cur.fetchall()
-            conn.close()
         items = []
         for row in rows:
+            aid = self._value_from_row(row, "artifact_id") or (row[0] if not isinstance(row, dict) else None)
+            anid = self._value_from_row(row, "analysis_id") or (row[1] if not isinstance(row, dict) else None)
+            title = self._value_from_row(row, "title") or (row[2] if not isinstance(row, dict) else None)
+            created = self._value_from_row(row, "created_at") or (row[3] if not isinstance(row, dict) else None)
+            size_val = self._value_from_row(row, "size")
+            if size_val is None and not isinstance(row, dict):
+                try:
+                    size_val = row[4]
+                except Exception:
+                    size_val = 0
+            meta_raw = self._value_from_row(row, "metadata")
+            if meta_raw is None and not isinstance(row, dict):
+                try:
+                    meta_raw = row[5]
+                except Exception:
+                    meta_raw = None
+            try:
+                metadata = json.loads(meta_raw) if meta_raw else {}
+            except Exception:
+                metadata = {}
             items.append(
                 {
-                    "artifact_id": row[0],
-                    "analysis_id": row[1],
-                    "title": row[2],
-                    "created_at": row[3],
-                    "size": row[4] or 0,
-                    "metadata": json.loads(row[5]) if row[5] else {},
+                    "artifact_id": aid,
+                    "analysis_id": anid,
+                    "title": title,
+                    "created_at": created,
+                    "size": int(size_val or 0),
+                    "metadata": metadata,
                 }
             )
         has_more = len(items) == limit
@@ -1046,16 +1223,25 @@ class RAGService:
                 (artifact_id,),
             )
             row = cur.fetchone()
-            conn.close()
         if not row:
             return None
+        aid = self._value_from_row(row, "artifact_id") or (row[0] if not isinstance(row, dict) else None)
+        anid = self._value_from_row(row, "analysis_id") or (row[1] if not isinstance(row, dict) else None)
+        title = self._value_from_row(row, "title") or (row[2] if not isinstance(row, dict) else None)
+        body = self._value_from_row(row, "body") if isinstance(row, dict) else row[3]
+        meta_raw = self._value_from_row(row, "metadata") if isinstance(row, dict) else row[4]
+        try:
+            metadata = json.loads(meta_raw) if meta_raw else {}
+        except Exception:
+            metadata = {}
+        created = self._value_from_row(row, "created_at") or (row[5] if not isinstance(row, dict) else None)
         return {
-            "artifact_id": row[0],
-            "analysis_id": row[1],
-            "title": row[2],
-            "body": row[3],
-            "metadata": json.loads(row[4]) if row[4] else {},
-            "created_at": row[5],
+            "artifact_id": aid,
+            "analysis_id": anid,
+            "title": title,
+            "body": body,
+            "metadata": metadata,
+            "created_at": created,
         }
 
     def search_analysis_artifacts(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
@@ -1077,7 +1263,6 @@ class RAGService:
                 (token, token, limit),
             )
             rows = cur.fetchall()
-            conn.close()
         return [
             {
                 "artifact_id": row[0],
@@ -1155,7 +1340,6 @@ class RAGService:
                             embedding = np.frombuffer(mem['embedding'], dtype=np.float32)
                             embeddings_to_add.append(embedding)
                 
-                conn.close()
                 
                 # Add embeddings to FAISS
                 if embeddings_to_add:
@@ -1310,20 +1494,17 @@ class RAGService:
                     logger.info(f"Indexed {len(embeddings_to_add)} segments for job {job_id}")
                 
                 conn.commit()
-            conn.close()
 
-            # Save FAISS index
-            self._save_faiss_index()
+                # Save FAISS index
+                self._save_faiss_index()
 
-            logger.info(f"Transcript {job_id} indexed successfully (transcript_id={transcript_id})")
-            return transcript_id
-                
+                logger.info(f"Transcript {job_id} indexed successfully (transcript_id={transcript_id})")
+                return transcript_id
             except Exception as e:
                 logger.error(f"Failed to index transcript: {e}")
                 import traceback
                 traceback.print_exc()
                 conn.rollback()
-                conn.close()
                 raise
 
     def _ensure_segment_column_extensions(self, cursor: sqlite3.Cursor) -> None:
@@ -1548,7 +1729,6 @@ class RAGService:
                     (limit,)
                 )
                 rows = cur.fetchall()
-                conn.close()
                 return {row[0] for row in rows}
         except Exception as e:
             logger.error(f"[RAG] Failed to load recent transcript ids: {e}")
@@ -1602,7 +1782,6 @@ class RAGService:
                 ))
                 
                 conn.commit()
-                conn.close()
                 
                 # Add to FAISS
                 self.faiss_index.add(embedding.reshape(1, -1))
@@ -1626,7 +1805,6 @@ class RAGService:
             record = cur.fetchone()
             
             if not record:
-                conn.close()
                 return None
             
             # Get segments
@@ -1637,7 +1815,6 @@ class RAGService:
             """, (record['id'],))
             segments = cur.fetchall()
             
-            conn.close()
             
             return {
                 'job_id': record['job_id'],
@@ -1730,7 +1907,6 @@ class RAGService:
                     ]
                 })
             
-            conn.close()
             logger.info("[RAG] get_recent_transcripts -> %s transcripts (limit=%s)", len(results), limit)
             return results
         except Exception as e:
@@ -1805,7 +1981,6 @@ class RAGService:
                 for day, counts in sorted(timeline_map.items(), key=lambda item: item[0])
             ]
 
-            conn.close()
 
             return {
                 "total_analyzed": total_analyzed,
@@ -1831,7 +2006,6 @@ class RAGService:
             cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memories'")
             if not cur.fetchone():
                 logger.warning("⚠️ [MEMORY-LIST] Table 'memories' does not exist")
-                conn.close()
                 return []
             
             # Get paginated memories
@@ -1843,7 +2017,6 @@ class RAGService:
             """, (limit, offset))
             
             memories = cur.fetchall()
-            conn.close()
             
             result = [
                 {
@@ -1921,36 +2094,41 @@ class RAGService:
 
 class ServiceAuthMiddleware(BaseHTTPMiddleware):
     """Middleware for JWT service authentication (Phase 3: Enforce JWT-only + replay)."""
+
     async def dispatch(self, request: Request, call_next):
         # Skip auth for health checks
         if request.url.path == "/health":
             return await call_next(request)
 
+        if service_auth is None:
+            logger.error("❌ Service auth unavailable")
+            return JSONResponse(status_code=503, content={"detail": "Service auth unavailable"})
+
         jwt_token = request.headers.get("X-Service-Token")
-        if not jwt_token or not service_auth:
+        if not jwt_token:
             logger.error(f"❌ Missing JWT for {request.url.path}")
             return JSONResponse(status_code=401, content={"detail": "Missing service token"})
 
+        allowed = ["gateway", "transcription-service", "gemma-service"]
         try:
-            # Enforce allowed services and audience
-            allowed = ["gateway", "transcription-service", "gemma-service"]
             payload = service_auth.verify_token(jwt_token, allowed_services=allowed, expected_aud="internal")
-
-            # Replay protection
-            from shared.security.service_auth import get_replay_protector
-            import time as _t
-            ttl = max(10, int(payload["expires_at"] - _t.time()) + 10)
-            ok, reason = get_replay_protector().check_and_store(payload.get("request_id", ""), ttl)
-            if not ok:
-                logger.error(f"❌ JWT replay blocked: reason={reason}")
-                return JSONResponse(status_code=401, content={"detail": "Replay detected"})
-
-            rid_short = str(payload.get('request_id',''))[:8]
-            logger.info(f"✅ JWT OK s={payload.get('service_id')} aud=internal rid={rid_short} path={request.url.path}")
-            return await call_next(request)
-        except Exception as e:
-            logger.error(f"❌ JWT rejected: {e} path={request.url.path}")
+        except ValueError as exc:
+            logger.error(f"❌ JWT rejected: {exc} path={request.url.path}")
             return JSONResponse(status_code=401, content={"detail": "Invalid service token"})
+
+        # Replay protection (log + short circuit on failure)
+        from shared.security.service_auth import get_replay_protector
+        import time as _t
+
+        ttl = max(10, int(payload.get("expires_at", 0) - _t.time()) + 10)
+        ok, reason = get_replay_protector().check_and_store(payload.get("request_id", ""), ttl)
+        if not ok:
+            logger.error(f"❌ JWT replay blocked: reason={reason}")
+            return JSONResponse(status_code=401, content={"detail": "Replay detected"})
+
+        rid_short = str(payload.get("request_id", ""))[:8]
+        logger.info(f"✅ JWT OK s={payload.get('service_id')} aud=internal rid={rid_short} path={request.url.path}")
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -1963,13 +2141,13 @@ async def lifespan(app: FastAPI):
     # Initialize service auth (Phase 3)
     try:
         from shared.security.secrets import get_secret
-        from shared.security.service_auth import get_service_auth
-        jwt_secret = get_secret("jwt_secret", default="dev_jwt_secret")
-        if jwt_secret:
-            service_auth = get_service_auth(service_id="rag-service", service_secret=jwt_secret)
-            logger.info("✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected)")
-        else:
-            logger.warning("jwt_secret not found; service auth unavailable")
+        from shared.security.service_auth import get_service_auth, load_service_jwt_keys
+        jwt_keys = load_service_jwt_keys("rag-service")
+        service_auth = get_service_auth(service_id="rag-service", service_secret=jwt_keys)
+        logger.info(
+            "✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected, keys=%s)",
+            len(jwt_keys),
+        )
         rag_db_key = get_secret("rag_db_key")
         if rag_db_key:
             logger.info("RAG DB encryption key loaded from secrets")
@@ -1990,6 +2168,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Failed to start RAG Service: {e}")
         raise
+
+    if EMAIL_ANALYZER_ENABLED:
+        try:
+            from modules.email.db import initialize_database  # type: ignore
+            from modules.email import routes as email_routes  # type: ignore
+
+            logger.info("[EMAIL] Initializing encrypted email analyzer database within RAG service...")
+            initialize_database()
+            app.include_router(email_routes.router, prefix="/email")
+            logger.info("[EMAIL] ✅ Email analyzer router mounted on RAG service")
+        except Exception as exc:
+            logger.error(f"[EMAIL] ❌ Failed to initialize email analyzer: {exc}")
+    else:
+        logger.info("[EMAIL] Email analyzer disabled via EMAIL_ANALYZER_ENABLED=false")
     
     yield
     
@@ -2014,11 +2206,17 @@ app.add_middleware(ServiceAuthMiddleware)
 @app.get("/health")
 def health() -> Dict[str, Any]:
     """Health check endpoint"""
+    docs = 0
+    try:
+        if rag_service and getattr(rag_service, 'faiss_index', None) is not None:
+            docs = int(getattr(rag_service.faiss_index, 'ntotal', 0) or 0)
+    except Exception:
+        docs = 0
     return {
         "status": "healthy",
         "service": "RAG",
         "version": "2.0.0",
-        "faiss_documents": rag_service.faiss_index.ntotal if rag_service else 0,
+        "faiss_documents": docs,
         "embedding_model": EMBEDDING_MODEL,
         "embedding_dim": EMBEDDING_DIM
     }
@@ -2156,6 +2354,21 @@ def get_transcript_speakers():
     except Exception as e:
         logger.error(f"[RAG] get_transcript_speakers failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to load speakers")
+
+
+@app.get("/debug/transcripts/time-range")
+def get_transcript_time_range():
+    """Expose dataset coverage info for diagnostics and UI hints."""
+    if not rag_service:
+        raise HTTPException(status_code=503, detail="RAG service not initialized")
+
+    try:
+        return rag_service.get_transcript_time_range()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[RAG] transcript time range computation failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to compute transcript time range")
 
 
 @app.post("/transcripts/count")
@@ -2364,7 +2577,6 @@ def get_memory_stats(
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) as count FROM memories WHERE body IS NOT NULL AND body != ''")
         total_memories = cur.fetchone()[0]
-        conn.close()
         
         return {
             "success": True,

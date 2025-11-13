@@ -15,6 +15,9 @@ from typing import Optional, Dict, List
 from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding as sym_padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from shared.crypto.db_encryption import create_encrypted_db
 
@@ -45,34 +48,114 @@ class Session:
     last_refresh: Optional[float] = None
     csrf_token: Optional[str] = None
 
+def _env_flag(var_name: str, default: bool) -> bool:
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
+SESSION_TOKEN_ENABLE_V2 = _env_flag("SESSION_TOKEN_ENABLE_V2", True)
+SESSION_TOKEN_EMIT_V2 = _env_flag("SESSION_TOKEN_EMIT_V2", True)
+SESSION_TOKEN_ACCEPT_V1 = _env_flag("SESSION_TOKEN_ACCEPT_V1", True)
+
+
 class SessionEncryption:
-    """Handles AES-256-GCM encryption/decryption of session tokens"""
+    """Handles AES-256 encryption/decryption of session tokens"""
 
     def __init__(self, secret_key: bytes):
         """Initialize with 32-byte secret key"""
         if len(secret_key) != 32:
             raise ValueError("Secret key must be exactly 32 bytes")
         self.key = secret_key
-        self._aead = AESGCM(secret_key)
+        self.backend = default_backend()
 
     def encrypt(self, data: Dict) -> str:
         """Encrypt session data and return base64-encoded token"""
         plaintext = json.dumps(data).encode("utf-8")
-        nonce = secrets.token_bytes(12)  # 96-bit nonce for GCM
-        ciphertext = self._aead.encrypt(nonce, plaintext, None)
-        token_bytes = nonce + ciphertext
-        return base64.urlsafe_b64encode(token_bytes).decode("utf-8")
+        padder = sym_padding.PKCS7(128).padder()
+        padded_data = padder.update(plaintext) + padder.finalize()
+        iv = secrets.token_bytes(16)
+        cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=self.backend)
+        encryptor = cipher.encryptor()
+        ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+        combined = iv + ciphertext
+        return base64.urlsafe_b64encode(combined).decode("utf-8")
 
     def decrypt(self, token: str) -> Optional[Dict]:
         """Decrypt base64-encoded token and return session data"""
         try:
-            token_bytes = base64.urlsafe_b64decode(token.encode("utf-8"))
-            nonce, ciphertext = token_bytes[:12], token_bytes[12:]
-            plaintext = self._aead.decrypt(nonce, ciphertext, None)
+            combined = base64.urlsafe_b64decode(token.encode("utf-8"))
+            iv = combined[:16]
+            ciphertext = combined[16:]
+            cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=self.backend)
+            decryptor = cipher.decryptor()
+            padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+            unpadder = sym_padding.PKCS7(128).unpadder()
+            plaintext = unpadder.update(padded_data) + unpadder.finalize()
             return json.loads(plaintext.decode("utf-8"))
         except Exception as e:
             print(f"[AUTH] Token decryption failed: {e}")
             return None
+
+
+class SessionEncryptionV2:
+    """AES-GCM (AEAD) session tokens with explicit v2 prefix."""
+
+    PREFIX = "v2."
+
+    def __init__(self, secret_key: bytes):
+        if len(secret_key) != 32:
+            raise ValueError("Secret key must be exactly 32 bytes")
+        self.aead = AESGCM(secret_key)
+
+    def encrypt(self, data: Dict) -> str:
+        plaintext = json.dumps(data).encode("utf-8")
+        nonce = secrets.token_bytes(12)
+        ciphertext = self.aead.encrypt(nonce, plaintext, None)
+        combined = nonce + ciphertext
+        token = base64.urlsafe_b64encode(combined).decode("utf-8").rstrip("=")
+        return f"{self.PREFIX}{token}"
+
+    def decrypt(self, token: str) -> Optional[Dict]:
+        if not token.startswith(self.PREFIX):
+            return None
+        body = token[len(self.PREFIX) :]
+        padding = "=" * (-len(body) % 4)
+        try:
+            raw = base64.urlsafe_b64decode(body + padding)
+            nonce, ciphertext = raw[:12], raw[12:]
+            plaintext = self.aead.decrypt(nonce, ciphertext, None)
+            return json.loads(plaintext.decode("utf-8"))
+        except Exception as exc:
+            print(f"[AUTH] v2 token rejection: {exc}")
+            return None
+
+
+class SessionTokenCodec:
+    """Encodes/decodes session tokens with compatibility flags."""
+
+    def __init__(self, secret_key: bytes):
+        self.v1 = SessionEncryption(secret_key)
+        self.enable_v2 = SESSION_TOKEN_ENABLE_V2
+        self.emit_v2 = self.enable_v2 and SESSION_TOKEN_EMIT_V2
+        self.accept_v1 = SESSION_TOKEN_ACCEPT_V1 or not self.enable_v2
+        self.v2 = SessionEncryptionV2(secret_key) if self.enable_v2 else None
+        print(f"[AUTH] Session tokens: emit_v2={self.emit_v2} accept_v1={self.accept_v1}")
+
+    def encode(self, data: Dict) -> str:
+        if self.emit_v2 and self.v2:
+            return self.v2.encrypt(data)
+        return self.v1.encrypt(data)
+
+    def decode(self, token: str) -> Optional[Dict]:
+        if token.startswith(SessionEncryptionV2.PREFIX):
+            if not self.enable_v2 or not self.v2:
+                return None
+            return self.v2.decrypt(token)
+        if self.accept_v1:
+            return self.v1.decrypt(token)
+        return None
 
 ENABLE_DEMO_USERS = os.environ.get("ENABLE_DEMO_USERS", "false").strip().lower() in {"1", "true", "yes"}
 
@@ -114,7 +197,7 @@ class AuthManager:
             # Generate and print warning - in production, load from env
             secret_key = secrets.token_bytes(32)
             print(f"[AUTH] WARNING: Generated ephemeral secret key. Set SECRET_KEY in environment for persistence!")
-        self.encryptor = SessionEncryption(secret_key)
+        self.token_codec = SessionTokenCodec(secret_key)
         
         # In-memory sessions (could be moved to Redis for distributed systems)
         self.sessions: Dict[str, Session] = {}
@@ -355,7 +438,7 @@ class AuthManager:
         }
         
         # Encrypt session data to create token
-        session_token = self.encryptor.encrypt(session_data)
+        session_token = self.token_codec.encode(session_data)
         
         # Store session in memory
         session = Session(
@@ -387,7 +470,7 @@ class AuthManager:
             return session
         
         # Decrypt and validate token
-        session_data = self.encryptor.decrypt(session_token)
+        session_data = self.token_codec.decode(session_token)
         if not session_data:
             return None
         

@@ -65,8 +65,11 @@ class SecretsManager:
                     value = None
                 else:
                     self.cache[secret_name] = value
-                    value_preview = value[:8] + "..." if len(value) > 8 else "***"
-                    logger.info(f"✅ SECRET GET: Loaded '{secret_name}' from Docker secrets ({len(value)} chars, preview: {value_preview})")
+                    logger.info(
+                        "✅ SECRET GET: Loaded '%s' from Docker secrets (len=%d chars)",
+                        secret_name,
+                        len(value),
+                    )
                     return value
             except Exception as e:
                 logger.error(f"❌ SECRET GET: Failed to read secret file {secret_file}: {e}")
@@ -81,8 +84,11 @@ class SecretsManager:
                 logger.warning(f"⚠️ SECRET GET: '{secret_name}' env var is empty")
             else:
                 self.cache[secret_name] = value
-                value_preview = value[:8] + "..." if len(value) > 8 else "***"
-                logger.info(f"✅ SECRET GET: Loaded '{secret_name}' from environment ({len(value)} chars, preview: {value_preview})")
+                logger.info(
+                    "✅ SECRET GET: Loaded '%s' from environment (len=%d chars)",
+                    secret_name,
+                    len(value),
+                )
                 return value
         else:
             logger.debug(f"🔍 SECRET GET: Environment variable {env_var} not set")
@@ -159,7 +165,6 @@ def get_secret(secret_name: str, default: Optional[str] = None) -> Optional[str]
     """
     manager = get_secrets_manager()
     return manager.get_secret(secret_name, default)
-
 
 
 

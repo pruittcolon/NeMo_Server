@@ -3,10 +3,21 @@ Authorization Middleware and Permission Helpers
 Provides role-based access control and speaker-based data isolation
 """
 
-from fastapi import HTTPException, Cookie, Depends, Request
+import logging
 from typing import Optional, List, Dict, Any
+
+from fastapi import HTTPException, Depends, Request
+
 from .auth_manager import get_auth_manager, UserRole, Session, User
 from src.config import SecurityConfig as SecConf
+from shared.logging.safe_logging import header_presence, token_presence
+
+logger = logging.getLogger(__name__)
+
+
+def _request_id(request: Request) -> str:
+    return request.headers.get("X-Request-Id") or getattr(request.state, "request_id", None) or "-"
+
 
 def require_auth(request: Request) -> Session:
     """
@@ -17,31 +28,46 @@ def require_auth(request: Request) -> Session:
     1. Session cookie (ws_session) - for web clients
     2. Authorization Bearer token - for mobile clients (Flutter)
     """
-    print(f"[require_auth] Called for path: {request.url.path}", flush=True)
+    req_id = _request_id(request)
+    logger.debug("[require_auth] called path=%s rid=%s", request.url.path, req_id)
     
     # First check if session was already validated and stored in request.state by middleware
     if hasattr(request.state, 'session'):
-        print(f"[require_auth] ✅ Found session in request.state", flush=True)
+        logger.debug("[require_auth] request.state session reused path=%s rid=%s", request.url.path, req_id)
         return request.state.session
     
     # Fallback: Try cookie first (web clients)
     ws_session = request.cookies.get(SecConf.SESSION_COOKIE_NAME)
-    auth_source = "cookie"
-    print(f"[require_auth] Checking cookies: ws_session={bool(ws_session)}", flush=True)
+    logger.debug(
+        "[require_auth] cookie lookup path=%s rid=%s has_cookie=%s",
+        request.url.path,
+        req_id,
+        bool(ws_session),
+    )
     
     # If no cookie, try Authorization header (mobile clients like Flutter)
     if not ws_session:
         auth_header = request.headers.get("Authorization", "")
-        print(f"[require_auth] No cookie, checking Authorization header: {auth_header[:50] if auth_header else 'EMPTY'}", flush=True)
-        if auth_header.startswith("Bearer "):
+        has_auth_header = bool(auth_header)
+        has_bearer = bool(auth_header.startswith("Bearer "))
+        logger.info(
+            "[require_auth] no cookie %s %s path=%s rid=%s",
+            header_presence("authorization", has_auth_header),
+            header_presence("bearer", has_bearer),
+            request.url.path,
+            req_id,
+        )
+        if has_bearer:
             ws_session = auth_header[7:]  # Remove "Bearer " prefix
-            auth_source = "Authorization header"
-            print(f"[require_auth] ✅ Found Bearer token: {ws_session[:30]}...", flush=True)
-        else:
-            print(f"[require_auth] ❌ Authorization header doesn't start with Bearer", flush=True)
+            logger.debug(
+                "[require_auth] bearer token accepted indicator=%s path=%s rid=%s",
+                token_presence("bearer", ws_session),
+                request.url.path,
+                req_id,
+            )
     
     if not ws_session:
-        print(f"[require_auth] ❌ NO AUTH FOUND - raising 401", flush=True)
+        logger.warning("[require_auth] missing auth path=%s rid=%s", request.url.path, req_id)
         raise HTTPException(
             status_code=401, 
             detail="Not authenticated. Please log in."
@@ -51,13 +77,18 @@ def require_auth(request: Request) -> Session:
     session = auth_manager.validate_session(ws_session)
     
     if not session:
-        print(f"[require_auth] ❌ Session validation failed", flush=True)
+        logger.warning(
+            "[require_auth] session invalid path=%s rid=%s indicator=%s",
+            request.url.path,
+            req_id,
+            token_presence("session", ws_session),
+        )
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired session. Please log in again."
         )
     
-    print(f"[require_auth] ✅ Session validated successfully", flush=True)
+    logger.debug("[require_auth] session validated path=%s rid=%s", request.url.path, req_id)
     return session
 
 def require_admin(session: Session = Depends(require_auth)) -> Session:

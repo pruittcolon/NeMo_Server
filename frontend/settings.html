@@ -14,6 +14,7 @@
   
   <script src="https://unpkg.com/lucide@latest"></script>
   
+  <link rel="stylesheet" href="assets/css/design-tokens.css?v=2024110802">
   <link rel="stylesheet" href="assets/css/main.css">
   <link rel="stylesheet" href="assets/css/components.css">
   <link rel="stylesheet" href="assets/css/animations.css">
@@ -22,8 +23,8 @@
   <script src="assets/js/app.js"></script>
   <script src="assets/js/auth.js"></script>
 </head>
-<body>
-  
+<body class="gemma-theme">
+
   <header class="glass-header">
     <div class="container">
       <div class="flex-between">
@@ -39,6 +40,7 @@
           <a href="emotions.html" class="nav-link">Emotions</a>
           <a href="memories.html" class="nav-link">Memories</a>
           <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="email.html" class="nav-link">Email</a>
           <a href="settings.html" class="nav-link active">Settings</a>
         </nav>
         
@@ -169,7 +171,7 @@
         </h3>
         <div style="color: var(--text-secondary); line-height: 1.8;">
           <p><strong>Version:</strong> 3.2 REFACTORED</p>
-          <p><strong>ASR Model:</strong> Parakeet-CTC-1.1B (GPU)</p>
+          <p><strong>ASR Model:</strong> Parakeet-TDT-0.6B (GPU)</p>
           <p><strong>AI Model:</strong> Gemma 3 4B (GPU)</p>
           <p><strong>Emotion Model:</strong> DistilRoBERTa (CPU)</p>
           <p><strong>Speaker Model:</strong> TitaNet Large (CPU)</p>
@@ -266,4 +268,3 @@
 
 </body>
 </html>
-

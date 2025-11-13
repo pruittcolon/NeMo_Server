@@ -1,10 +1,8 @@
 // Imports from all files, combined and de-duplicated
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
-import 'package:camera/camera.dart';
 import 'package:deepgram_speech_to_text/deepgram_speech_to_text.dart';
 import 'package:demo_ai_even/ble_manager.dart';
 import 'package:demo_ai_even/controllers/evenai_model_controller.dart';
@@ -14,13 +12,10 @@ import 'package:demo_ai_even/services/text_service.dart';
 import 'package:demo_ai_even/services/deepgram_service.dart';
 import 'package:demo_ai_even/services/whisperserver_service.dart';
 import 'package:dio/dio.dart';
-import 'package:demo_ai_even/utils/app_logger.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:get/get.dart';
-import 'package:image/image.dart' as img;
-import 'package:permission_handler/permission_handler.dart';
 import 'roku.dart';
 
 // --- MEMORY SERVER (wake-word) CONFIG ---
@@ -147,13 +142,6 @@ class EvenAI {
   bool _isChatGPTConversationMode = false;
   List<Map<String, String>> _chatGPTHistory = [];
   Timer? _chatGPTModeTimer;
-
-  // --- VISION MODE STATE ---
-  bool _isVisionModeActive = false;
-  CameraController? _cameraController;
-  Timer? _visionModeTimer;
-  Timer? _cameraCaptureTimer;
-  String? _latestImageBase64;
 
   // --- MEMORY MODE STATE ---
   /// Client used to communicate with the memory server.
@@ -466,8 +454,6 @@ Say 'Terminate' to exit""";
       RegExp(r"\bchat\b", caseSensitive: false).hasMatch(text);
   bool _matchesInterviewMode(String text) =>
       RegExp(r"\binterview\b", caseSensitive: false).hasMatch(text);
-  bool _matchesVisionMode(String text) =>
-      RegExp(r"\bvision\b", caseSensitive: false).hasMatch(text);
 
   Future<void> recordOverByOS() async {
     // --- MEMORY MODE ---
@@ -738,18 +724,6 @@ Say 'Terminate' to exit""";
         return;
       }
 
-      // --- ENTER VISION MODE ---
-      if (_matchesVisionMode(cleanTranscript)) {
-        print("🎯🎯🎯 VISION MODE DETECTED! Transcript: '$cleanTranscript' 🎯🎯🎯");
-        AppLogger.banner('VISION MODE TRIGGERED');
-        AppLogger.vision('Transcript matched vision mode: "$cleanTranscript"');
-        print("EvenAI: Entering Vision Mode.");
-        print("🚀 About to call _startVisionMode()...");
-        await _startVisionMode();
-        print("✅ _startVisionMode() completed!");
-        return;
-      }
-
       // --- NEW: ENTER ALEXA MODE ---
       if (_matchesAlexa(cleanTranscript)) {
         print("EvenAI: Entering Alexa Remote Mode.");
@@ -837,12 +811,6 @@ Say 'Terminate' to exit""";
             cleanTranscript.contains("end")) {
           print("EvenAI: User spoke 'terminate', ending session.");
           
-          // Exit vision mode if active
-          if (_isVisionModeActive) {
-            await _exitVisionMode();
-            return;
-          }
-          
           // Clear ChatGPT conversation mode if active
           if (_isChatGPTConversationMode) {
             print("EvenAI: Exiting ChatGPT/Interview mode. Clearing ${_chatGPTHistory.length} messages.");
@@ -865,11 +833,10 @@ Say 'Terminate' to exit""";
       await TextService.get.startSendText("Q: $transcript");
       final apiService = ApiDeepSeekService();
       
-      // Pass conversation history and image if in vision mode
+      // Pass conversation history if in ChatGPT conversation mode
       final answer = await apiService.sendChatRequest(
         transcript, 
-        conversationHistory: _isChatGPTConversationMode ? _chatGPTHistory : null,
-        imageBase64: _isVisionModeActive ? _latestImageBase64 : null,
+        conversationHistory: _isChatGPTConversationMode ? _chatGPTHistory : null
       );
       
       print("EvenAI: Answer from OpenAI: '$answer'");
@@ -912,322 +879,6 @@ Say 'Terminate' to exit""";
     controller.addItem(title, content);
   }
 
-  // --- VISION MODE METHODS ---
-  
-  /// Public method to start Vision Mode (can be called from UI)
-  Future<void> startVisionMode() async {
-    await _startVisionMode();
-  }
-  
-  Future<void> _startVisionMode() async {
-    try {
-      // Prevent double-activation if already active
-      if (_isVisionModeActive) {
-        AppLogger.warning('Vision Mode already active - ignoring re-entry');
-        return;
-      }
-      print("📍 _startVisionMode: ENTRY POINT");
-      AppLogger.separator('VISION MODE ACTIVATION');
-      AppLogger.vision('Starting Vision Mode initialization');
-      
-      // Check camera permission
-      print("📍 _startVisionMode: Checking camera permission...");
-      AppLogger.vision('Checking camera permission');
-      final hasPermission = await Permission.camera.isGranted;
-      print("📍 _startVisionMode: Has permission = $hasPermission");
-      
-      if (!hasPermission) {
-        print("📍 _startVisionMode: Requesting camera permission...");
-        AppLogger.warning('Camera permission not granted, requesting permission');
-        final status = await Permission.camera.request();
-        print("📍 _startVisionMode: Permission status = ${status.isGranted}");
-        AppLogger.permission('Camera', status.isGranted);
-        
-        if (!status.isGranted) {
-          print("📍 _startVisionMode: Permission DENIED - exiting");
-          AppLogger.error('Camera permission denied by user');
-          await TextService.get.startSendText("Camera permission required for Vision Mode.");
-          return;
-        }
-      } else {
-        print("📍 _startVisionMode: Permission already granted");
-        AppLogger.success('Camera permission already granted');
-      }
-      
-      print("📍 _startVisionMode: Setting state variables...");
-      AppLogger.stateChange('Vision Mode Active', false, true);
-      _isVisionModeActive = true;
-      _isChatGPTConversationMode = true;
-      _chatGPTHistory.clear();
-      
-      // Set up system prompt for vision mode
-      print("📍 _startVisionMode: Setting up system prompt...");
-      AppLogger.vision('Setting up vision mode system prompt');
-      _chatGPTHistory.add({
-        "role": "system",
-        "content": "You are a helpful AI assistant with vision. "
-            "Analyze images and answer questions about what you see. "
-            "Keep ALL responses under 50 words - concise and clear. "
-            "Focus on the most important details. "
-            "If asked about text, read it accurately. "
-            "If asked about objects, describe them briefly."
-      });
-      print("📍 _startVisionMode: System prompt added");
-      AppLogger.debug('Conversation history initialized with ${_chatGPTHistory.length} messages');
-      
-      print("📍 _startVisionMode: Sending text to glasses...");
-      AppLogger.bluetooth('Sending activation message to glasses');
-      await TextService.get.startSendText(
-          "Vision Mode:\nOpening camera. Press capture button to analyze.\nSay 'Terminate' to exit.");
-      print("📍 _startVisionMode: Text sent to glasses");
-      
-      // Navigate to vision mode page (no auto-capture)
-      print("📍 _startVisionMode: About to navigate to /vision route...");
-      AppLogger.info('Navigating to Vision Mode page');
-      Get.toNamed('/vision');
-      print("📍 _startVisionMode: Navigation called (sync)");
-      
-      // Auto-exit after 10 minutes
-      print("📍 _startVisionMode: Setting up 10-minute timer...");
-      AppLogger.timer('Vision Mode Auto-Exit Timer', 'Starting (10 min)');
-      _visionModeTimer?.cancel();
-      _visionModeTimer = Timer(const Duration(minutes: 10), () async {
-        AppLogger.warning('Vision mode auto-exit triggered after 10 minutes');
-        await _exitVisionMode();
-      });
-      print("📍 _startVisionMode: Timer set");
-      
-      print("📍 _startVisionMode: SUCCESS - Vision mode fully activated!");
-      AppLogger.success('Vision Mode fully activated and ready');
-      AppLogger.separator();
-      
-    } catch (e, stackTrace) {
-      AppLogger.error('Failed to start vision mode', error: e, stackTrace: stackTrace);
-      await TextService.get.startSendText("Camera error. Vision mode unavailable.");
-      await _exitVisionMode();
-    }
-  }
-  
-  /// Public method to capture and analyze image (called by vision mode page)
-  /// Requires the camera controller from the vision page
-  Future<String> captureAndAnalyzeImage(CameraController cameraController) async {
-    try {
-      AppLogger.camera('Capture triggered - using vision page camera');
-      
-      if (!cameraController.value.isInitialized) {
-        AppLogger.error('Camera controller not initialized!');
-        return "Error: Camera not ready";
-      }
-      
-      // Capture image using the existing camera controller
-      AppLogger.camera('Taking picture with camera controller...');
-      final image = await cameraController.takePicture();
-      final bytes = await image.readAsBytes();
-      final originalSize = bytes.length;
-      
-      AppLogger.success('Image captured: ${originalSize} bytes');
-      
-      // Compress image
-      AppLogger.camera('Decoding and compressing image');
-      final decodedImage = img.decodeImage(bytes);
-      
-      String? imageBase64;
-      if (decodedImage != null) {
-        AppLogger.debug('Original image size: ${decodedImage.width}x${decodedImage.height}');
-        
-        // Resize to max 800px width while maintaining aspect ratio
-        final resized = img.copyResize(decodedImage, width: 800);
-        AppLogger.debug('Resized to: ${resized.width}x${resized.height}');
-        
-        final compressed = img.encodeJpg(resized, quality: 70);
-        imageBase64 = base64Encode(compressed);
-        
-        final compressionRatio = ((1 - compressed.length / originalSize) * 100).toStringAsFixed(1);
-        AppLogger.success('Image compressed: ${compressed.length} bytes ($compressionRatio% reduction)');
-      }
-      
-      if (imageBase64 == null) {
-        return "Error: Failed to process image";
-      }
-      
-      // Two-step process: GPT-4o Vision analyzes, then GPT-5 refines the answer
-      AppLogger.vision('Step 1: Sending image to GPT-4o vision for analysis');
-      final apiService = ApiDeepSeekService();
-      
-      // Step 1: GPT-4o Vision reads and extracts the question + context from the image
-      String visionPrompt = "Extract and describe the exam question shown in this image. Include the question text, any answer choices, and relevant context. Be precise and complete.";
-      
-      AppLogger.apiRequest('GPT-4o Vision', visionPrompt);
-      final visionAnalysis = await apiService.sendChatRequest(
-        visionPrompt,
-        conversationHistory: null,
-        imageBase64: imageBase64,
-      );
-      
-      AppLogger.success('Vision analysis received: ${visionAnalysis.length} characters');
-      AppLogger.debug('Vision extracted: ${visionAnalysis.substring(0, visionAnalysis.length > 150 ? 150 : visionAnalysis.length)}...');
-      
-      // Step 2: GPT-5 generates a concise, accurate answer based on the vision analysis
-      AppLogger.vision('Step 2: Sending to GPT-5 for refined answer');
-      String refinementPrompt = "Based on this exam question analysis, provide a brief, direct answer (40 words max):\n\n$visionAnalysis";
-      
-      AppLogger.apiRequest('GPT-5', refinementPrompt);
-      final response = await apiService.sendChatRequest(
-        refinementPrompt,
-        conversationHistory: null,
-        imageBase64: null, // No image for GPT-5, just text
-      );
-      
-      AppLogger.success('Received refined answer: ${response.length} characters');
-      
-      // Add to conversation history (store the vision analysis as context)
-      _chatGPTHistory.add({"role": "user", "content": "Image: $visionAnalysis"});
-      _chatGPTHistory.add({"role": "assistant", "content": response});
-      
-      // Send response to glasses
-      AppLogger.bluetooth('Sending response to glasses');
-      await TextService.get.startSendText(response);
-      
-      return response;
-      
-    } catch (e, stackTrace) {
-      AppLogger.error('Error capturing and analyzing image', error: e, stackTrace: stackTrace);
-      return "Error: ${e.toString()}";
-    }
-  }
-  
-  Future<void> _initCamera() async {
-    try {
-      AppLogger.camera('Querying available cameras');
-      final cameras = await availableCameras();
-      
-      if (cameras.isEmpty) {
-        AppLogger.error('No cameras available on device');
-        throw Exception("No cameras available");
-      }
-      
-      AppLogger.debug('Found ${cameras.length} camera(s)');
-      for (var i = 0; i < cameras.length; i++) {
-        AppLogger.debug('Camera $i: ${cameras[i].name} (${cameras[i].lensDirection})');
-      }
-      
-      // Find rear camera
-      final rearCamera = cameras.firstWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.back,
-        orElse: () => cameras.first,
-      );
-      
-      AppLogger.camera('Selected camera: ${rearCamera.name} (${rearCamera.lensDirection})');
-      
-      _cameraController = CameraController(
-        rearCamera,
-        ResolutionPreset.medium,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
-      );
-      
-      AppLogger.camera('Initializing camera controller...');
-      await _cameraController!.initialize();
-      
-      AppLogger.success('Camera initialized successfully');
-      AppLogger.debug('Camera resolution: ${_cameraController!.value.previewSize}');
-      
-    } catch (e, stackTrace) {
-      AppLogger.error('Camera initialization failed', error: e, stackTrace: stackTrace);
-      rethrow;
-    }
-  }
-  
-  Future<void> _captureImage() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      AppLogger.warning('Camera not ready for capture');
-      return;
-    }
-    
-    try {
-      AppLogger.camera('Capturing image...');
-      final image = await _cameraController!.takePicture();
-      final bytes = await image.readAsBytes();
-      final originalSize = bytes.length;
-      
-      AppLogger.debug('Image captured: ${originalSize} bytes');
-      
-      // Compress image to reduce size
-      AppLogger.camera('Decoding and compressing image');
-      final decodedImage = img.decodeImage(bytes);
-      
-      if (decodedImage != null) {
-        AppLogger.debug('Original image size: ${decodedImage.width}x${decodedImage.height}');
-        
-        // Resize to max 800px width while maintaining aspect ratio
-        final resized = img.copyResize(decodedImage, width: 800);
-        AppLogger.debug('Resized to: ${resized.width}x${resized.height}');
-        
-        final compressed = img.encodeJpg(resized, quality: 70);
-        _latestImageBase64 = base64Encode(compressed);
-        
-        final compressionRatio = ((1 - compressed.length / originalSize) * 100).toStringAsFixed(1);
-        AppLogger.success('Image compressed: ${compressed.length} bytes ($compressionRatio% reduction)');
-      } else {
-        AppLogger.error('Failed to decode image');
-      }
-      
-    } catch (e, stackTrace) {
-      AppLogger.error('Error capturing image', error: e, stackTrace: stackTrace);
-    }
-  }
-  
-  void _stopCamera() {
-    AppLogger.camera('Stopping camera and disposing controller');
-    _cameraController?.dispose();
-    _cameraController = null;
-    _latestImageBase64 = null;
-    AppLogger.success('Camera stopped and disposed');
-  }
-  
-  Future<void> _exitVisionMode() async {
-    AppLogger.separator('VISION MODE EXIT');
-    AppLogger.vision('Exiting Vision Mode');
-    
-    AppLogger.stateChange('Vision Mode Active', true, false);
-    _isVisionModeActive = false;
-    _isChatGPTConversationMode = false;
-    
-    AppLogger.debug('Clearing conversation history (${_chatGPTHistory.length} messages)');
-    _chatGPTHistory.clear();
-    
-    AppLogger.timer('Camera Capture Timer', 'Cancelling');
-    _cameraCaptureTimer?.cancel();
-    
-    AppLogger.timer('Vision Mode Timer', 'Cancelling');
-    _visionModeTimer?.cancel();
-    
-    _stopCamera();
-
-    // Ensure the Vision page is closed so its timers and camera are disposed
-    try {
-      if (Get.currentRoute == '/vision' && Get.key.currentState != null) {
-        AppLogger.info('Popping /vision route');
-        Get.back();
-      } else {
-        // Attempt to remove any lingering /vision route from the stack
-        AppLogger.debug('Ensuring /vision route is not on stack');
-        Get.until((route) => route.settings.name != '/vision');
-      }
-    } catch (e) {
-      AppLogger.warning('Could not pop /vision route (might already be closed): $e');
-    }
-    
-    AppLogger.bluetooth('Clearing glasses display');
-    await _robustExitBmp();
-    
-    clear();
-    isRunning = false;
-    
-    AppLogger.success('Vision Mode exited successfully');
-    AppLogger.separator();
-  }
-
   void clear() {
     print("EvenAI: Clearing state.");
     _isAwaitingFollowUp = false;
@@ -1236,7 +887,6 @@ Say 'Terminate' to exit""";
     _isAwaitingAlexaCommand = false; // --- NEW ---
     _isAwaitingMemoryQuestion = false; // Reset memory mode question flag
     _isMemoryModeActive = false; // Reset memory mode active flag
-    _isVisionModeActive = false; // Reset vision mode flag
     isReceivingAudio = false;
     _isManual = false;
     _currentLine = 0;
@@ -1246,10 +896,6 @@ Say 'Terminate' to exit""";
     _rokuModeTimer = null;
     _alexaModeTimer?.cancel();
     _alexaModeTimer = null;
-    _visionModeTimer?.cancel();
-    _visionModeTimer = null;
-    _cameraCaptureTimer?.cancel();
-    _cameraCaptureTimer = null;
     _timer?.cancel();
     _timer = null;
     list.clear();
@@ -1257,7 +903,6 @@ Say 'Terminate' to exit""";
     durationS = 0;
     retryCount = 0;
     _transcriptFuture = null;
-    _stopCamera();
   }
 
   Future<void> openEvenAIMic() async {
@@ -1497,6 +1142,82 @@ Say 'Terminate' to exit""";
 }
 
 // ========================================================================
+// Deepgram Service Class (Handles Speech-to-Text)
+// ========================================================================
+class DeepgramService {
+  final String _apiKey = dotenv.env['DEEPGRAM_API_KEY'] ?? '';
+
+  Deepgram? _deepgram;
+  StreamSubscription<DeepgramListenResult>? _responseSubscription;
+  StreamController<List<int>>? _audioStreamController;
+  Completer<String>? _transcriptCompleter;
+
+  Future<String> startStreaming() {
+    print("DeepgramService: Starting stream...");
+    if (_apiKey.isEmpty) {
+      print(
+          "DeepgramService: ERROR - DEEPGRAM_API_KEY is not set in .env file.");
+      return Future.value('');
+    }
+
+    _transcriptCompleter = Completer<String>();
+    _audioStreamController = StreamController<List<int>>();
+    _deepgram = Deepgram(_apiKey);
+
+    _responseSubscription = _deepgram!.listen.live(
+      _audioStreamController!.stream,
+      queryParams: {
+        'encoding': 'linear16',
+        'sampleRate': 16000,
+        'interim_results': true,
+        'smart_format': true,
+      },
+    ).listen(
+      (response) {
+        final transcript = response.transcript ?? '';
+        final isFinal = response.map['is_final'] == true;
+
+        if (transcript.trim().isNotEmpty && isFinal) {
+          print("DeepgramService: Received final transcript: '$transcript'");
+          if (!_transcriptCompleter!.isCompleted) {
+            _transcriptCompleter!.complete(transcript);
+          }
+        }
+      },
+      onDone: () {
+        print("DeepgramService: Stream 'onDone' called.");
+        if (!_transcriptCompleter!.isCompleted) {
+          _transcriptCompleter!.complete('');
+        }
+      },
+      onError: (error) {
+        print("DeepgramService: Stream error: $error");
+        if (!_transcriptCompleter!.isCompleted) {
+          _transcriptCompleter!.completeError(error);
+        }
+      },
+    );
+
+    return _transcriptCompleter!.future;
+  }
+
+  void sendAudio(Uint8List pcmData) {
+    if (_audioStreamController != null && !_audioStreamController!.isClosed) {
+      _audioStreamController!.add(pcmData);
+    }
+  }
+
+  Future<void> stopStreaming() async {
+    print("DeepgramService: Stopping stream...");
+    await _audioStreamController?.close();
+    await _responseSubscription?.cancel();
+    _audioStreamController = null;
+    _responseSubscription = null;
+    _deepgram = null;
+  }
+}
+
+// ========================================================================
 // API Service Class (Handles communication with the AI model)
 // ========================================================================
 class ApiDeepSeekService {
@@ -1516,129 +1237,57 @@ class ApiDeepSeekService {
     );
   }
 
-  Future<String> sendChatRequest(
-    String question, {
-    List<Map<String, String>>? conversationHistory,
-    String? imageBase64,
-  }) async {
-    AppLogger.methodEntry('ApiDeepSeekService', 'sendChatRequest', params: {
-      'question_length': question.length,
-      'has_history': conversationHistory != null,
-      'has_image': imageBase64 != null,
-    });
-
+  Future<String> sendChatRequest(String question, {List<Map<String, String>>? conversationHistory}) async {
     String modelToUse;
     if (question.toLowerCase().contains("research")) {
       modelToUse = "gpt-5";
-      AppLogger.debug('Selected gpt-5 model (keyword: "research")');
-    } else if (imageBase64 != null) {
-      modelToUse = "gpt-4o";
-      AppLogger.vision('Selected gpt-4o model for vision request');
     } else {
       modelToUse = "gpt-4o";
-      AppLogger.debug('Selected gpt-4o model (default)');
     }
+    print("Keyword check complete. Using model: $modelToUse");
 
     // Build messages array with conversation history
-    List<Map<String, dynamic>> messages;
+    List<Map<String, String>> messages = [
+      {"role": "system", "content": "You are a helpful assistant. Keep responses concise for smart glasses display."},
+    ];
     
+    // Add conversation history if provided
     if (conversationHistory != null && conversationHistory.isNotEmpty) {
-      AppLogger.debug('Using conversation history with ${conversationHistory.length} messages');
-      messages = List<Map<String, dynamic>>.from(conversationHistory);
-      
-      // Add current user message with optional image
-      if (imageBase64 != null) {
-        final imageSize = (imageBase64.length * 3 / 4 / 1024).toStringAsFixed(1);
-        AppLogger.vision('Adding message with text and image ($imageSize KB)');
-        messages.add({
-          "role": "user",
-          "content": [
-            {"type": "text", "text": question},
-            {
-              "type": "image_url",
-              "image_url": {"url": "data:image/jpeg;base64,$imageBase64"}
-            }
-          ]
-        });
-      } else {
-        AppLogger.debug('Adding text-only message to history');
-        messages.add({"role": "user", "content": question});
-      }
-    } else {
-      AppLogger.debug('Creating new conversation (no history)');
-      if (imageBase64 != null) {
-        final imageSize = (imageBase64.length * 3 / 4 / 1024).toStringAsFixed(1);
-        AppLogger.vision('Building vision request with image ($imageSize KB)');
-        messages = [
-          {"role": "system", "content": "You are a helpful assistant. Keep responses concise for smart glasses display."},
-          {
-            "role": "user",
-            "content": [
-              {"type": "text", "text": question},
-              {
-                "type": "image_url",
-                "image_url": {"url": "data:image/jpeg;base64,$imageBase64"}
-              }
-            ]
-          }
-        ];
-      } else {
-        AppLogger.debug('Building text-only request');
-        messages = [
-          {"role": "system", "content": "You are a helpful assistant. Keep responses concise for smart glasses display."},
-          {"role": "user", "content": question}
-        ];
-      }
+      messages.addAll(conversationHistory);
+      print("ChatGPT: Including ${conversationHistory.length} previous messages");
     }
+    
+    // Add current question
+    messages.add({"role": "user", "content": question});
 
     final data = {
       "model": modelToUse,
       "messages": messages,
-      "max_tokens": 150,
     };
 
-    AppLogger.apiRequest('POST', '/chat/completions', data: {
-      'model': modelToUse,
-      'message_count': messages.length,
-      'max_tokens': 150,
-    });
+    print("Sending request to OpenAI with ${messages.length} messages");
 
     try {
-      AppLogger.network('Sending request to OpenAI API...');
       final response = await _dio.post('/chat/completions', data: data);
 
       if (response.statusCode == 200) {
-        AppLogger.apiResponse('/chat/completions', response.statusCode!);
+        print("OpenAI Response: ${response.data}");
         final data = response.data;
         final content = data['choices']?[0]?['message']?['content'] ??
             "Unable to answer the question";
-        
-        AppLogger.success('Received response: ${content.length} characters');
-        AppLogger.debug('Response preview: ${content.substring(0, content.length > 100 ? 100 : content.length)}...');
-        
-        AppLogger.methodExit('ApiDeepSeekService', 'sendChatRequest', result: 'Success');
         return content;
       } else {
-        AppLogger.apiResponse('/chat/completions', response.statusCode!);
-        AppLogger.error('Request failed with status: ${response.statusCode}');
+        print("Request failed with status: ${response.statusCode}");
         return "Request failed with status: ${response.statusCode}";
       }
     } on DioException catch (e) {
-      final status = e.response?.statusCode;
-      final data = e.response?.data;
-      
-      if (status != null) {
-        AppLogger.apiResponse('/chat/completions', status, data: data);
-        AppLogger.error('OpenAI API error: $status', error: data);
-        return "AI request error: $status, $data";
+      if (e.response != null) {
+        print("Error: ${e.response?.statusCode}, ${e.response?.data}");
+        return "AI request error: ${e.response?.statusCode}, ${e.response?.data}";
       } else {
-        final message = e.message ?? e.error?.toString() ?? 'Unknown error';
-        AppLogger.error('Network error during API request', error: e);
-        return "AI request error: $message";
+        print("Error: ${e.message}");
+        return "AI request error: ${e.message}";
       }
-    } catch (e, stackTrace) {
-      AppLogger.error('Unexpected error in sendChatRequest', error: e, stackTrace: stackTrace);
-      return "Unexpected error: $e";
     }
   }
 }

@@ -15,10 +15,9 @@ import logging
 import hashlib
 import uuid
 from datetime import datetime, timedelta
-from threading import Lock
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, HTTPException, Request, Response, Depends, Cookie, Header, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, Cookie, Header, File, UploadFile, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +52,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger(__name__)
 
 from src.config import SecurityConfig as SecConf
+from shared.analysis.fallback_store import AnalysisFallbackStore
+from shared.logging.safe_logging import header_presence, token_presence
 
 # Configuration
 GEMMA_URL = os.getenv("GEMMA_URL", "http://gemma-service:8001")
@@ -60,6 +61,8 @@ RAG_URL = os.getenv("RAG_URL", "http://rag-service:8004")
 EMOTION_URL = os.getenv("EMOTION_URL", "http://emotion-service:8005")
 TRANSCRIPTION_URL = os.getenv("TRANSCRIPTION_URL", "http://transcription-service:8003")
 INSIGHTS_URL = os.getenv("INSIGHTS_URL", "http://insights-service:8010")
+# Feature toggles
+EMAIL_ANALYZER_ENABLED = os.getenv("EMAIL_ANALYZER_ENABLED", "true").lower() in {"1", "true", "yes"}
 # Security & CORS
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://127.0.0.1,http://localhost").split(",") if o.strip()]
 # Centralized cookie and CSRF names to prevent drift
@@ -73,11 +76,24 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 # Speaker identifier validation pattern (lowercase alphanumerics, hyphen, underscore)
 SPEAKER_ID_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$")
 # Frontend is at /app/frontend in container
+APP_INSTANCE_DIR = Path(os.getenv("APP_INSTANCE_DIR", "/app/instance"))
+try:
+    APP_INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as exc:  # noqa: BLE001
+    logger.warning("Failed to create APP_INSTANCE_DIR %s: %s", APP_INSTANCE_DIR, exc)
+
 FRONTEND_DIR = Path("/app/frontend") if Path("/app/frontend").exists() else Path(__file__).parent.parent.parent.parent.parent / "frontend"
+FAVICON_PATH = FRONTEND_DIR / "assets" / "images" / "icons" / "favicon.png"
 CANONICAL_HOST = os.getenv("CANONICAL_HOST", "localhost").strip()
 CANONICAL_PORT = os.getenv("CANONICAL_PORT", "").strip()
-ANALYSIS_FALLBACK_FILE = Path(os.getenv("ANALYSIS_FALLBACK_FILE", "/app/instance/analysis_fallback.json"))
-_analysis_fallback_lock = Lock()
+LEGACY_ANALYSIS_FALLBACK_FILE = Path(os.getenv("ANALYSIS_FALLBACK_FILE", str(APP_INSTANCE_DIR / "analysis_fallback.json")))
+ANALYSIS_FALLBACK_DIR = Path(os.getenv("ANALYSIS_FALLBACK_DIR", str(APP_INSTANCE_DIR / "analysis_fallback")))
+ANALYSIS_FALLBACK_MAX_ARTIFACTS = int(os.getenv("ANALYSIS_FALLBACK_MAX_ARTIFACTS", "200"))
+fallback_store = AnalysisFallbackStore(
+    base_dir=ANALYSIS_FALLBACK_DIR,
+    legacy_file=LEGACY_ANALYSIS_FALLBACK_FILE,
+    max_per_user=ANALYSIS_FALLBACK_MAX_ARTIFACTS,
+)
 
 # Global auth manager and service auth
 auth_manager = None
@@ -90,28 +106,22 @@ personality_jobs: Dict[str, Dict[str, Any]] = {}
 analysis_jobs: Dict[str, Dict[str, Any]] = {}
 
 
-def _load_fallback_artifacts() -> List[Dict[str, Any]]:
-    with _analysis_fallback_lock:
-        if not ANALYSIS_FALLBACK_FILE.exists():
-            return []
-        try:
-            return json.loads(ANALYSIS_FALLBACK_FILE.read_text())
-        except Exception as exc:
-            logger.warning("[ANALYSIS-FALLBACK] Failed to read %s: %s", ANALYSIS_FALLBACK_FILE, exc)
-            return []
+def _is_admin(session: Optional[Session]) -> bool:
+    return bool(session and getattr(session, "role", "").lower() == "admin")
 
 
-def _save_fallback_artifacts(items: List[Dict[str, Any]]) -> None:
-    with _analysis_fallback_lock:
-        ANALYSIS_FALLBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ANALYSIS_FALLBACK_FILE.write_text(json.dumps(items, indent=2))
+def _require_user_id(session: Optional[Session]) -> str:
+    user_id = getattr(session, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=403, detail="Authenticated user required for fallback storage")
+    return str(user_id)
 
 
-def _persist_fallback_artifact(payload: Dict[str, Any], session: Optional[Session]) -> Dict[str, Any]:
+def _persist_fallback_artifact(payload: Dict[str, Any], session: Session) -> Dict[str, Any]:
+    user_id = _require_user_id(session)
     artifact_id = payload.get("artifact_id") or f"fallback_{uuid.uuid4().hex}"
     metadata = dict(payload.get("metadata") or {})
-    if session and metadata.get("user_id") is None:
-        metadata["user_id"] = getattr(session, "user_id", None)
+    metadata.setdefault("user_id", user_id)
     artifact = {
         "artifact_id": artifact_id,
         "analysis_id": payload.get("analysis_id"),
@@ -120,32 +130,45 @@ def _persist_fallback_artifact(payload: Dict[str, Any], session: Optional[Sessio
         "metadata": metadata,
         "created_at": datetime.utcnow().isoformat() + "Z",
     }
-    items = _load_fallback_artifacts()
-    items = [item for item in items if item.get("artifact_id") != artifact_id]
-    items.insert(0, artifact)
-    _save_fallback_artifacts(items)
-    return artifact
+    return fallback_store.upsert_user_artifact(user_id, artifact)
 
 
-def _list_fallback_artifacts(limit: int, offset: int) -> Dict[str, Any]:
-    items = _load_fallback_artifacts()
+def _list_fallback_artifacts(
+    limit: int,
+    offset: int,
+    session: Session,
+    include_all: bool = False,
+) -> Dict[str, Any]:
+    if include_all:
+        items = fallback_store.list_all_artifacts()
+        scope = "all"
+    else:
+        user_id = _require_user_id(session)
+        items = fallback_store.list_user_artifacts(user_id)
+        scope = "user"
+
     subset = items[offset: offset + limit]
     return {
         "success": True,
         "items": subset,
         "count": len(subset),
         "total": len(items),
-        "has_more": offset + limit < len(items),
+        "has_more": offset + len(subset) < len(items),
+        "next_offset": offset + len(subset),
         "source": "gateway_fallback",
+        "scope": scope,
     }
 
 
-def _get_fallback_artifact(artifact_id: str) -> Optional[Dict[str, Any]]:
-    items = _load_fallback_artifacts()
-    for item in items:
-        if item.get("artifact_id") == artifact_id:
-            return item
-    return None
+def _get_fallback_artifact(
+    artifact_id: str,
+    session: Session,
+    include_all: bool = False,
+) -> Optional[Dict[str, Any]]:
+    if include_all:
+        return fallback_store.get_any_artifact(artifact_id)
+    user_id = _require_user_id(session)
+    return fallback_store.get_user_artifact(user_id, artifact_id)
 
 
 def _decode_session_key(raw_value: Optional[str]) -> Optional[bytes]:
@@ -206,7 +229,7 @@ async def lifespan(app: FastAPI):
         from auth.auth_manager import init_auth_manager
         auth_manager = init_auth_manager(
             secret_key=session_key_bytes,
-            db_path="/app/instance/users.db",
+            db_path=str(APP_INSTANCE_DIR / "users.db"),
             db_encryption_key=users_db_key,
         )
         logger.info("Auth manager initialized with global singleton")
@@ -214,26 +237,32 @@ async def lifespan(app: FastAPI):
     # Initialize service auth for inter-service JWTs
     logger.info("🔍 DEBUG: About to initialize JWT service auth")
     try:
-        from shared.security.secrets import get_secret
-        from shared.security.service_auth import get_service_auth
-        jwt_secret = get_secret("jwt_secret", default="dev_jwt_secret")
-        if jwt_secret:
-            # service_id for gateway
-            global service_auth
-            service_auth = get_service_auth(service_id="gateway", service_secret=jwt_secret)
-            logger.info("✅ JWT service auth initialized for gateway")
-        else:
-            logger.warning("jwt_secret not found; X-Service-Token will not be sent")
+        from shared.security.service_auth import (
+            get_service_auth,
+            load_service_jwt_keys,
+        )
+        jwt_keys = load_service_jwt_keys("gateway")
+        global service_auth
+        service_auth = get_service_auth(service_id="gateway", service_secret=jwt_keys)
+        logger.info("✅ JWT service auth initialized for gateway (keys=%s)", len(jwt_keys))
     except Exception as e:
         import traceback
         logger.error(f"⚠️ Failed to initialize ServiceAuth: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
+        raise
     
     yield
     
     logger.info("API Gateway shutdown complete")
 
 app = FastAPI(title="API Gateway", version="1.0.0", lifespan=lifespan)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    if FAVICON_PATH.exists():
+        return FileResponse(str(FAVICON_PATH), media_type="image/png")
+    return Response(status_code=204)
 
 
 # Custom StaticFiles with no-cache headers to prevent VPN/browser caching issues
@@ -368,7 +397,15 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         # Paths that allow Bearer token auth (mobile clients) without CSRF
         self.bearer_auth_paths = {"/transcribe"}
         self.logger = logging.getLogger(__name__)
-        print("[CSRF MIDDLEWARE] ✅ CSRFMiddleware initialized!", flush=True)
+        self.logger.info("CSRFMiddleware initialized")
+
+    @staticmethod
+    def _request_id(request: Request) -> str:
+        return (
+            request.headers.get("X-Request-Id")
+            or getattr(request.state, "request_id", None)
+            or "-"
+        )
 
     async def dispatch(self, request: Request, call_next):
         # Respect global CSRF toggle (e.g., TEST_MODE or local dev). When disabled,
@@ -386,24 +423,54 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
             
             if request.method in {"POST", "PUT", "DELETE"}:
-                print(f"[CSRF MIDDLEWARE] Processing {request.method} {request.url.path}", flush=True)
+                req_id = self._request_id(request)
+                self.logger.debug(
+                    "[CSRF] processing method=%s path=%s rid=%s",
+                    request.method,
+                    request.url.path,
+                    req_id,
+                )
                 # Validate session
                 ws_session = request.cookies.get(SESSION_COOKIE_NAME)
                 
                 # Check for Bearer token (mobile clients like Flutter)
                 if not ws_session:
                     auth_header = request.headers.get("Authorization", "")
-                    print(f"[CSRF MIDDLEWARE] No cookie, checking auth header: {auth_header[:40] if auth_header else 'EMPTY'}", flush=True)
-                    if auth_header.startswith("Bearer "):
+                    has_auth_header = bool(auth_header)
+                    has_bearer = bool(auth_header.startswith("Bearer "))
+                    self.logger.info(
+                        "[CSRF] no cookie %s %s path=%s rid=%s",
+                        header_presence("authorization", has_auth_header),
+                        header_presence("bearer", has_bearer),
+                        request.url.path,
+                        req_id,
+                    )
+                    if has_bearer:
                         ws_session = auth_header[7:]  # Remove "Bearer " prefix
-                        print(f"[CSRF MIDDLEWARE] ✅ Found Bearer token: {ws_session[:20]}...", flush=True)
+                        self.logger.debug(
+                            "[CSRF] bearer token accepted indicator=%s path=%s rid=%s",
+                            token_presence("bearer", ws_session),
+                            request.url.path,
+                            req_id,
+                        )
                 
                 if not auth_manager or not ws_session:
-                    print(f"[CSRF MIDDLEWARE] ❌ NOT AUTHENTICATED: auth_manager={bool(auth_manager)}, ws_session={bool(ws_session)}", flush=True)
+                    self.logger.warning(
+                        "[CSRF] not authenticated path=%s rid=%s auth_manager=%s ws_session=%s",
+                        request.url.path,
+                        req_id,
+                        bool(auth_manager),
+                        bool(ws_session),
+                    )
                     return Response(content='{"detail":"Not authenticated"}', media_type="application/json", status_code=401)
                 session = auth_manager.validate_session(ws_session)
                 if not session:
-                    print(f"[CSRF MIDDLEWARE] ❌ Session validation failed", flush=True)
+                    self.logger.warning(
+                        "[CSRF] session validation failed path=%s rid=%s source=%s",
+                        request.url.path,
+                        req_id,
+                        "bearer" if request.url.path in self.bearer_auth_paths else "cookie",
+                    )
                     return Response(content='{"detail":"Invalid session"}', media_type="application/json", status_code=401)
                 
                 # Store session in request.state for later use by require_auth
@@ -411,29 +478,29 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 
                 # Skip CSRF check for Bearer auth paths (mobile clients don't have CSRF tokens)
                 if request.url.path in self.bearer_auth_paths:
-                    print(f"[CSRF MIDDLEWARE] ✅ Bearer auth path, allowing through", flush=True)
+                    self.logger.debug(
+                        "[CSRF] bearer auth path allowed path=%s rid=%s",
+                        request.url.path,
+                        req_id,
+                    )
                     return await call_next(request)
                 
                 # Double-submit CSRF check for web clients
                 header_token = request.headers.get(CSRF_HEADER_NAME)
                 cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
                 if not header_token or not cookie_token or header_token != cookie_token or header_token != session.csrf_token:
-                    # Log token fingerprints (first 8 chars) to aid debugging without leaking secrets
-                    ht = (header_token or "")[:8]
-                    ct = (cookie_token or "")[:8]
-                    st = (session.csrf_token or "")[:8]
                     self.logger.warning(
-                        "[CSRF] invalid token path=%s header=%s cookie=%s session=%s",
+                        "[CSRF] invalid token path=%s rid=%s header=%s cookie=%s session=%s",
                         request.url.path,
-                        ht,
-                        ct,
-                        st,
+                        req_id,
+                        token_presence("header", header_token),
+                        token_presence("cookie", cookie_token),
+                        token_presence("session", session.csrf_token),
                     )
                     return Response(content='{"detail":"CSRF token invalid"}', media_type="application/json", status_code=403)
         except Exception as e:
-            print(f"[CSRF MIDDLEWARE] EXCEPTION: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
+            req_id = self._request_id(request)
+            self.logger.exception("[CSRF] unexpected error path=%s rid=%s", request.url.path, req_id)
         return await call_next(request)
 
 app.add_middleware(CSRFMiddleware)
@@ -640,7 +707,7 @@ async def proxy_request(
     logger.info(f"🔄 [PROXY {request_id}] START: {method} {url}")
     
     # Build headers with service authentication
-    headers: Dict[str, str] = {}
+    headers: Dict[str, str] = {"X-Request-Id": request_id}
     jwt_emitted = False
     jwt_short = ""
     
@@ -768,6 +835,19 @@ async def proxy_request(
         raise HTTPException(status_code=503, detail=f"Service unavailable: {str(e)}")
 
 
+def _service_jwt_headers(expires_in: int = 60) -> Dict[str, str]:
+    """Helper to mint short-lived service JWTs for direct httpx streams."""
+    if not service_auth:
+        logger.error("[SERVICE-AUTH] Requested token but service_auth unavailable")
+        raise HTTPException(status_code=503, detail="Service authentication unavailable")
+    try:
+        token = service_auth.create_token(expires_in=expires_in, aud="internal")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[SERVICE-AUTH] Failed to create JWT: %s", exc)
+        raise HTTPException(status_code=503, detail="Service authentication unavailable") from exc
+    return {"X-Service-Token": token}
+
+
 def format_sse(event: str, payload: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
 
@@ -853,8 +933,7 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
 
     payload = job.get("payload") or {}
     filters = payload.get("filters") or {}
-    prompt_template = payload.get("custom_prompt") or ""
-    max_tokens = int(payload.get("max_tokens", 512) or 512)
+    max_tokens = int(payload.get("max_tokens", 256) or 256)
     temperature = float(payload.get("temperature", 0.4) or 0.4)
     analysis_id = http_request.query_params.get("analysis_id") or job.get("analysis_id")
     analysis_headers = {"X-Analysis-Id": analysis_id} if analysis_id else None
@@ -878,8 +957,20 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                 normalized.append(str(item))
         return normalized
 
-    async def _fetch_fallback_items() -> List[Dict[str, Any]]:
-        limit = max(1, min(int(filters.get("limit", 20) or 20), 200))
+    raw_max = payload.get("max_statements")
+    try:
+        analysis_limit = int(raw_max)
+    except (TypeError, ValueError):
+        analysis_limit = None
+    if not analysis_limit or analysis_limit <= 0:
+        try:
+            analysis_limit = int(filters.get("limit", 20) or 20)
+        except (TypeError, ValueError):
+            analysis_limit = 20
+    analysis_limit = max(1, min(analysis_limit, 200))
+
+    async def _fetch_fallback_items(target_limit: int) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(target_limit or 20), 200))
         context_lines = max(0, min(int(filters.get("context_lines", 3) or 0), 10))
         speakers_filter = {s.lower() for s in _normalize_filter_list(filters.get("speakers"))}
         emotions_filter = {e.lower() for e in _normalize_filter_list(filters.get("emotions"))}
@@ -939,7 +1030,9 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                 if emotions_filter and emotion_value not in emotions_filter:
                     continue
 
-                text_value = segment.get("text") or ""
+                text_value = (segment.get("text") or "").strip()
+                if not text_value:
+                    continue
                 if keywords:
                     text_lower = text_value.lower()
                     matches = [kw for kw in keywords if kw in text_lower]
@@ -977,9 +1070,10 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
         return items
 
     logger.info(
-        "[ANALYZE-STREAM] job=%s analysis_id=%s filters=%s user=%s",
+        "[ANALYZE-STREAM] job=%s analysis_id=%s max_statements=%s filters=%s user=%s",
         job_id,
         analysis_id,
+        analysis_limit,
         {k: filters.get(k) for k in ("limit", "speakers", "emotions", "start_date", "end_date", "search_type")},
         getattr(session, "user_id", None),
     )
@@ -994,6 +1088,16 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
         MAX_PROMPT_CHARS = 6000
         combined_sections: List[str] = []
         artifact_id: Optional[str] = None
+        transcripts_sentinel = "<END_OF_TRANSCRIPTS>"
+        analysis_stop_sequences: List[str] = []
+        prompt_template = (payload.get("custom_prompt") or "").strip()
+        has_transcript_placeholder = "{transcripts}" in prompt_template
+        apply_short_instruction = bool(prompt_template) and not has_transcript_placeholder
+        guardrail_instruction = (
+            "You are an analyst. Please answer the user's question about the given transcript section."
+            if apply_short_instruction
+            else ""
+        )
 
         try:
             # Warmup GPU (best effort)
@@ -1020,11 +1124,13 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                 yield format_sse("meta", {"job_id": job_id, "message": "GPU warmup failed; continuing"})
 
             rag_payload = dict(filters)
-            rag_payload.setdefault("limit", max(1, min(int(filters.get("limit", 20) or 20), 200)))
+            rag_payload["limit"] = analysis_limit
             rag_payload.setdefault("context_lines", max(0, min(int(filters.get("context_lines", 3) or 0), 10)))
 
             fallback_used = False
             rag_query_status: Optional[int] = None
+            raw_items: List[Dict[str, Any]] = []
+            dataset_total = None
             try:
                 rag_result = await proxy_request(
                     f"{RAG_URL}/transcripts/query",
@@ -1033,7 +1139,12 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                     extra_headers=analysis_headers,
                 )
                 rag_query_status = 200
-                items = rag_result.get("items") or []
+                raw_items = rag_result.get("items") or []
+                try:
+                    if isinstance(rag_result, dict):
+                        dataset_total = rag_result.get("total") or rag_result.get("count")
+                except Exception:
+                    dataset_total = None
             except HTTPException as exc:
                 if exc.status_code == 404:
                     logger.error(
@@ -1045,7 +1156,7 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                     rag_query_status = 404
                     if ANALYZE_FALLBACK_ENABLED:
                         fallback_used = True
-                        items = await _fetch_fallback_items()
+                        items = await _fetch_fallback_items(analysis_limit)
                     else:
                         yield format_sse("server_error", {"job_id": job_id, "detail": "RAG query unavailable"})
                         return
@@ -1053,14 +1164,20 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                     rag_query_status = exc.status_code
                     raise
 
+            items = [
+                item
+                for item in raw_items
+                if isinstance(item, dict) and (item.get("text") or "").strip()
+            ]
+            if len(items) > analysis_limit:
+                items = items[:analysis_limit]
+
             # Prefer backend-reported total if available to avoid UI jumps to the page limit
-            rag_total = None
-            try:
-                if isinstance(rag_result, dict):
-                    rag_total = rag_result.get("total") or rag_result.get("count")
-            except Exception:
-                rag_total = None
-            total = rag_total if isinstance(rag_total, int) else len(items)
+            if isinstance(dataset_total, int):
+                dataset_total_int = dataset_total
+            else:
+                dataset_total_int = len(raw_items) if raw_items else len(items)
+            total = len(items)
             if fallback_used:
                 logger.info(
                     "[ANALYZE-STREAM] job=%s analysis_id=%s fallback produced %s candidate statements",
@@ -1076,7 +1193,27 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                     total,
                 )
 
-            meta_payload = {"job_id": job_id, "total": total, "started_at": started_at}
+            def _alpha_label(position: int) -> str:
+                if position <= 0:
+                    return str(position)
+                label = ""
+                while position > 0:
+                    position, rem = divmod(position - 1, 26)
+                    label = chr(65 + rem) + label
+                return label
+
+            for idx, item in enumerate(items, start=1):
+                if isinstance(item, dict):
+                    item.setdefault("label", _alpha_label(idx))
+
+            meta_payload = {
+                "job_id": job_id,
+                "total": total,
+                "started_at": started_at,
+                "max_statements": analysis_limit,
+            }
+            if isinstance(dataset_total_int, int):
+                meta_payload["dataset_total"] = dataset_total_int
             if fallback_used:
                 meta_payload["fallback"] = "transcripts/recent"
                 meta_payload["fallback_reason"] = "rag_query_404"
@@ -1101,6 +1238,15 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                 )
                 return
 
+            def _alpha_label(position: int) -> str:
+                if position <= 0:
+                    return str(position)
+                label = ""
+                while position > 0:
+                    position, rem = divmod(position - 1, 26)
+                    label = chr(65 + rem) + label
+                return label
+
             for index, item in enumerate(items, start=1):
                 if await http_request.is_disconnected():
                     logger.warning(
@@ -1110,17 +1256,42 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                     )
                     break
 
-                snippet_lines: List[str] = []
-                for ctx in item.get("context_before") or []:
-                    snippet_lines.append(f"[Context] {ctx.get('speaker') or 'Speaker'}: {ctx.get('text')}")
-                snippet_lines.append(f"[Statement] {item.get('speaker') or 'Speaker'}: {item.get('text')}")
-                transcript_block = "\n".join(snippet_lines)
+                label = None
+                if isinstance(item, dict):
+                    label = item.get("label") or _alpha_label(index)
+                    item["label"] = label
 
-                if prompt_template and "{transcripts}" in prompt_template:
-                    final_prompt = prompt_template.replace("{transcripts}", transcript_block)
+                context_before = item.get("context_before") or []
+                context_plain_lines = [
+                    f"{ctx.get('speaker') or 'Speaker'}: {ctx.get('text')}" for ctx in context_before if ctx.get("text")
+                ]
+                context_plain = "\n".join(context_plain_lines).strip()
+                statement_plain = f"{item.get('speaker') or 'Speaker'}: {item.get('text')}".strip()
+
+                log_block_parts: List[str] = []
+                if context_plain:
+                    log_block_parts.append("Context:\n" + context_plain)
+                log_block_parts.append("Statement:\n" + statement_plain)
+                transcript_block = "\n".join(log_block_parts)
+
+                statement_header = f"Statement {label or index}"
+                formatted_sections: List[str] = [statement_header]
+                if context_plain:
+                    formatted_sections.extend(["Context:", "```", context_plain, "```"])
+                formatted_sections.extend(["Statement:", "```", statement_plain, "```"])
+                formatted_sections.append(transcripts_sentinel)
+                formatted_transcripts = "\n".join(formatted_sections)
+
+                if has_transcript_placeholder:
+                    user_instruction = prompt_template.replace("{transcripts}", formatted_transcripts)
                 else:
-                    base_prompt = prompt_template or "Gemma, analyze the following statement."
-                    final_prompt = base_prompt.strip() + "\n\nTranscripts:\n" + transcript_block
+                    base_prompt = prompt_template or "Analyze the following transcript section."
+                    user_instruction = base_prompt.strip() + "\n\nTranscript Section:\n" + formatted_transcripts
+
+                if guardrail_instruction:
+                    final_prompt = guardrail_instruction.strip() + "\n\n" + user_instruction.strip()
+                else:
+                    final_prompt = user_instruction.strip()
 
                 prompt_trimmed = False
                 if len(final_prompt) > MAX_PROMPT_CHARS:
@@ -1144,52 +1315,52 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                     prompt_trimmed,
                 )
 
-                yield format_sse(
-                    "step",
-                    {
-                        "job_id": job_id,
-                        "i": index,
-                        "total": total,
-                        "status": "sending",
-                        "prompt_fragment": final_prompt[:160],
-                    },
-                )
+                step_payload = {
+                    "job_id": job_id,
+                    "i": index,
+                    "total": total,
+                    "status": "sending",
+                    "prompt_fragment": final_prompt[:160],
+                }
+                if label:
+                    step_payload["label"] = label
+                yield format_sse("step", step_payload)
 
                 gemma_request = {
                     "prompt": final_prompt,
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "top_p": 0.9,
+                    "stop": analysis_stop_sequences,
                 }
 
-                yield format_sse(
-                    "step",
-                    {
-                        "job_id": job_id,
-                        "i": index,
-                        "total": total,
-                        "status": "waiting",
-                    },
-                )
+                waiting_payload = {
+                    "job_id": job_id,
+                    "i": index,
+                    "total": total,
+                    "status": "waiting",
+                }
+                if label:
+                    waiting_payload["label"] = label
+                yield format_sse("step", waiting_payload)
 
                 try:
-                    response = await proxy_request(
-                        f"{GEMMA_URL}/generate",
-                        "POST",
-                        json=gemma_request,
-                        extra_headers=analysis_headers,
+                    response_text, gen_resp = await _gemma_generate_with_fallback(
+                        gemma_request,
+                        analysis_headers,
                     )
+                    last_model = (gen_resp or {}).get("model") or last_model
                 except HTTPException as exc:
                     logger.error("[ANALYZE-STREAM] Gemma error job=%s: %s", job_id, exc.detail)
                     yield format_sse("error", {"job_id": job_id, "i": index, "detail": exc.detail})
                     break
 
-                response_text = response.get("text") or response.get("response") or ""
-                last_model = response.get("model") or last_model
+                if not isinstance(response_text, str) or not response_text.strip():
+                    response_text = "Gemma returned no text for this statement. Try refining the prompt or reducing stop sequences."
                 combined_sections.append(
                     "\n".join(
                         [
-                            f"Statement {index}/{total}",
+                            f"{statement_header} ({index}/{total})",
                             "Context:",
                             transcript_block,
                             "",
@@ -1200,16 +1371,16 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                     )
                 )
 
-                yield format_sse(
-                    "result",
-                    {
-                        "job_id": job_id,
-                        "i": index,
-                        "total": total,
-                        "response": response_text,
-                        "item": item,
-                    },
-                )
+                result_payload = {
+                    "job_id": job_id,
+                    "i": index,
+                    "total": total,
+                    "response": response_text,
+                    "item": item,
+                }
+                if label:
+                    result_payload["label"] = label
+                yield format_sse("result", result_payload)
 
                 logger.info(
                     "[ANALYZE-STREAM] job=%s analysis_id=%s statement=%s/%s completed tokens=%s mode=%s",
@@ -1279,14 +1450,7 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                         "max_tokens": 384,
                         "temperature": 0.3,
                     }
-                    gen_resp = await proxy_request(
-                        f"{GEMMA_URL}/generate",
-                        "POST",
-                        json=gen_req,
-                        extra_headers=analysis_headers,
-                    )
-                    if isinstance(gen_resp, dict):
-                        summary_text = (gen_resp.get("text") or gen_resp.get("response") or "").strip()
+                    summary_text, _ = await _gemma_generate_with_fallback(gen_req, analysis_headers)
             except Exception as exc:
                 logger.warning("[ANALYZE-STREAM] summary generation failed job=%s analysis_id=%s: %s", job_id, analysis_id, exc)
 
@@ -1318,6 +1482,270 @@ async def gemma_analyze_stream(job_id: str, http_request: Request, session: Sess
                 exc,
             )
             yield format_sse("error", {"job_id": job_id, "detail": str(exc)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/gemma/analyze/stream/inline/start")
+async def gemma_analyze_stream_inline(
+    payload: str = Query(..., description="Base64 payload"),
+    http_request: Request = None,
+    session: Session = Depends(require_auth),
+):
+    """Stream analyzer progress via Server-Sent Events without a separate job-creation step.
+
+    Mirrors gemma_analyze_stream but accepts a base64-encoded JSON payload directly in the query string.
+    """
+    decoded_payload = _prepare_email_stream_payload(payload)
+    analysis_id = decoded_payload.get("analysis_id") or http_request.query_params.get("analysis_id")
+    analysis_headers = {"X-Analysis-Id": analysis_id} if analysis_id else None
+
+    filters = decoded_payload.get("filters") or {}
+    try:
+        raw_max = decoded_payload.get("max_statements")
+        analysis_limit = int(raw_max) if raw_max is not None else int(filters.get("limit", 20) or 20)
+    except Exception:
+        analysis_limit = 20
+    analysis_limit = max(1, min(analysis_limit, 200))
+
+    async def event_generator():
+        last_model = None
+        started_at = datetime.utcnow().isoformat() + "Z"
+        MAX_PROMPT_CHARS = 6000
+        combined_sections: List[str] = []
+        artifact_id: Optional[str] = None
+        transcripts_sentinel = "<END_OF_TRANSCRIPTS>"
+        analysis_stop_sequences: List[str] = []
+        prompt_template = (decoded_payload.get("custom_prompt") or "").strip()
+        has_transcript_placeholder = "{transcripts}" in prompt_template
+        apply_short_instruction = bool(prompt_template) and not has_transcript_placeholder
+        guardrail_instruction = (
+            "You are an analyst. Please answer the user's question about the given transcript section."
+            if apply_short_instruction
+            else ""
+        )
+
+        try:
+            # Warmup GPU (best effort)
+            try:
+                await proxy_request(
+                    f"{GEMMA_URL}/warmup",
+                    "POST",
+                    json={},
+                    extra_headers=analysis_headers,
+                )
+                yield format_sse("meta", {"message": "GPU warmup complete"})
+            except Exception as warmup_error:
+                logger.warning("[ANALYZE-STREAM] Warmup failed (inline): %s", warmup_error)
+                yield format_sse("meta", {"message": "GPU warmup failed; continuing"})
+
+            rag_payload = dict(filters)
+            rag_payload["limit"] = analysis_limit
+            rag_payload.setdefault("context_lines", max(0, min(int(filters.get("context_lines", 3) or 0), 10)))
+
+            fallback_used = False
+            rag_query_status: Optional[int] = None
+            raw_items: List[Dict[str, Any]] = []
+            dataset_total = None
+            try:
+                rag_result = await proxy_request(
+                    f"{RAG_URL}/transcripts/query",
+                    "POST",
+                    json=rag_payload,
+                    extra_headers=analysis_headers,
+                )
+                rag_query_status = 200
+                raw_items = rag_result.get("items") or []
+                try:
+                    if isinstance(rag_result, dict):
+                        dataset_total = rag_result.get("total") or rag_result.get("count")
+                except Exception:
+                    dataset_total = None
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    rag_query_status = 404
+                    fallback_used = True
+                    # Build fallback items from recent transcripts
+                    async def _fetch_fallback_items(target_limit: int) -> List[Dict[str, Any]]:
+                        limit = max(1, min(int(target_limit or 20), 200))
+                        context_lines = max(0, min(int(filters.get("context_lines", 3) or 0), 10))
+                        def _norm_list(val: Optional[Any]) -> set:
+                            if not val:
+                                return set()
+                            if isinstance(val, (list, tuple, set)):
+                                return {str(x).lower() for x in val}
+                            return {str(val).lower()}
+                        speakers_filter = _norm_list(filters.get("speakers"))
+                        emotions_filter = _norm_list(filters.get("emotions"))
+                        raw_keywords = str(filters.get("keywords", "") or "")
+                        keywords = [k.strip().lower() for k in raw_keywords.split(",") if k.strip()]
+                        require_all = filters.get("match", "any") == "all"
+                        recent_limit = max(limit * 5, 200)
+                        recent_response = await proxy_request(
+                            f"{RAG_URL}/transcripts/recent?limit={recent_limit}",
+                            "GET",
+                            params=None,
+                            extra_headers=analysis_headers,
+                        )
+                        transcripts = recent_response.get("transcripts") or []
+                        out: List[Dict[str, Any]] = []
+                        for tr in transcripts:
+                            segments = tr.get("segments") or []
+                            for idx, seg in enumerate(segments):
+                                sp = (seg.get("speaker") or "").lower()
+                                if speakers_filter and sp not in speakers_filter:
+                                    continue
+                                em = (seg.get("emotion") or tr.get("dominant_emotion") or "").lower()
+                                if emotions_filter and em not in emotions_filter:
+                                    continue
+                                raw_text = (seg.get("text") or "")
+                                text_clean = raw_text.strip()
+                                if not text_clean:
+                                    continue
+                                text_val = raw_text.lower()
+                                if keywords:
+                                    hits = [kw for kw in keywords if kw in text_val]
+                                    if require_all and len(hits) != len(keywords):
+                                        continue
+                                    if not require_all and not hits:
+                                        continue
+                                ctx: List[Dict[str, Any]] = []
+                                if context_lines:
+                                    start_idx = max(0, idx - context_lines)
+                                    for j in range(start_idx, idx):
+                                        prev = segments[j]
+                                        ctx.append({"speaker": prev.get("speaker"), "text": prev.get("text"), "emotion": prev.get("emotion")})
+                                out.append({
+                                    "speaker": seg.get("speaker"),
+                                    "emotion": seg.get("emotion") or tr.get("dominant_emotion"),
+                                    "text": text_clean,
+                                    "created_at": tr.get("created_at"),
+                                    "job_id": tr.get("job_id"),
+                                    "transcript_id": tr.get("id"),
+                                    "start_time": seg.get("start_time"),
+                                    "end_time": seg.get("end_time"),
+                                    "context_before": ctx,
+                                })
+                                if len(out) >= limit:
+                                    return out
+                        return out
+
+                    raw_items = await _fetch_fallback_items(analysis_limit)
+                else:
+                    rag_query_status = exc.status_code
+                    raise
+
+            items = [
+                item
+                for item in (raw_items or [])
+                if isinstance(item, dict) and (item.get("text") or "").strip()
+            ]
+            if len(items) > analysis_limit:
+                items = items[:analysis_limit]
+
+            if isinstance(dataset_total, int):
+                dataset_total_int = dataset_total
+            else:
+                dataset_total_int = len(raw_items) if raw_items else len(items)
+            total = len(items)
+            meta_payload = {
+                "total": total,
+                "max_statements": analysis_limit,
+            }
+            if fallback_used:
+                meta_payload["fallback"] = "transcripts/recent"
+            if isinstance(dataset_total_int, int):
+                meta_payload["dataset_total"] = dataset_total_int
+            yield format_sse("meta", meta_payload)
+
+            if total == 0:
+                yield format_sse("done", {"completed_at": datetime.utcnow().isoformat() + "Z", "model": None})
+                return
+
+            def _alpha_label(position: int) -> str:
+                if position <= 0:
+                    return str(position)
+                label = ""
+                while position > 0:
+                    position, rem = divmod(position - 1, 26)
+                    label = chr(65 + rem) + label
+                return label
+
+            for index, item in enumerate(items, start=1):
+                if await http_request.is_disconnected():
+                    break
+                label = _alpha_label(index)
+                context_before = item.get("context_before") or []
+                context_plain_lines = [f"{ctx.get('speaker') or 'Speaker'}: {ctx.get('text')}" for ctx in context_before if ctx.get("text")]
+                context_plain = "\n".join(context_plain_lines).strip()
+                statement_plain = f"{item.get('speaker') or 'Speaker'}: {item.get('text')}".strip()
+
+                formatted_sections: List[str] = [f"Statement {label}"]
+                if context_plain:
+                    formatted_sections.extend(["Context:", "```", context_plain, "```"])
+                formatted_sections.extend(["Statement:", "```", statement_plain, "```"])
+                formatted_sections.append(transcripts_sentinel)
+                formatted_transcripts = "\n".join(formatted_sections)
+
+                if has_transcript_placeholder:
+                    user_instruction = prompt_template.replace("{transcripts}", formatted_transcripts)
+                else:
+                    base_prompt = prompt_template or "Analyze the following transcript section."
+                    user_instruction = base_prompt.strip() + "\n\nTranscript Section:\n" + formatted_transcripts
+                final_prompt = (guardrail_instruction.strip() + "\n\n" + user_instruction.strip()).strip()
+
+                # Enforce prompt size limits
+                if len(final_prompt) > MAX_PROMPT_CHARS:
+                    final_prompt = final_prompt[-MAX_PROMPT_CHARS:]
+
+                yield format_sse("step", {"i": index, "total": total, "status": "prompting"})
+                try:
+                    gemma_request = {
+                        "prompt": final_prompt,
+                        "max_tokens": int(decoded_payload.get("max_tokens", 512) or 512),
+                        "temperature": float(decoded_payload.get("temperature", 0.4) or 0.4),
+                        "stop": analysis_stop_sequences,
+                    }
+                    answer_text, gen_resp = await _gemma_generate_with_fallback(
+                        gemma_request,
+                        analysis_headers,
+                    )
+                    last_model = (gen_resp or {}).get("model") or last_model
+                    if not isinstance(answer_text, str) or not answer_text.strip():
+                        answer_text = "Gemma returned no text for this statement. Try refining the prompt or reducing stop sequences."
+                except HTTPException as exc:
+                    yield format_sse("server_error", {"detail": f"Gemma error: {getattr(exc, 'detail', exc)}"})
+                    return
+
+                combined_section = [f"Statement {label}"]
+                if context_plain:
+                    combined_section.extend(["Context:", context_plain])
+                combined_section.extend(["Statement:", statement_plain, "Gemma Response:", answer_text or "(empty)"])
+                combined_sections.append("\n".join(combined_section))
+
+                yield format_sse("result", {"i": index, "total": total, "response": answer_text, "item": item})
+
+            # Summarize
+            summary_text = ""
+            try:
+                if combined_sections:
+                    summary_context = "\n\n".join(combined_sections)[-12000:]
+                    summary_prompt = (
+                        "You are an expert conversation analyst. Based on the following analysis sections (each contains Context and Gemma Response), "
+                        "write a concise executive summary with 5-8 bullet points and a 2-3 sentence conclusion. Be precise and avoid repetition.\n\n"
+                        f"{summary_context}\n\nNow provide the executive summary:"
+                    )
+                    gen_req = {"prompt": summary_prompt, "max_tokens": 384, "temperature": 0.3}
+                    summary_text, _ = await _gemma_generate_with_fallback(gen_req, analysis_headers)
+            except Exception as exc:
+                logger.warning("[ANALYZE-STREAM] summary generation failed (inline): %s", exc)
+
+            yield format_sse("done", {"completed_at": datetime.utcnow().isoformat() + "Z", "model": last_model, **({"summary": summary_text} if summary_text else {})})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("[ANALYZE-STREAM] Unexpected error (inline): %s", exc)
+            yield format_sse("error", {"detail": str(exc)})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -1578,6 +2006,319 @@ async def memory_add(request: Dict[str, Any], session: Session = Depends(require
     return result
 
 
+# ============================================================================
+# Email Analyzer Endpoints
+# ============================================================================
+
+
+@app.get("/api/email/users")
+async def email_users(session: Session = Depends(require_auth)):
+    _ensure_email_analyzer_enabled()
+    logger.info("[EMAIL] users requested by %s", getattr(session, "user_id", None))
+    return await proxy_request(f"{RAG_URL}/email/users", "GET")
+
+
+@app.get("/api/email/labels")
+async def email_labels(session: Session = Depends(require_auth)):
+    _ensure_email_analyzer_enabled()
+    logger.info("[EMAIL] labels requested by %s", getattr(session, "user_id", None))
+    return await proxy_request(f"{RAG_URL}/email/labels", "GET")
+
+
+@app.get("/api/email/stats")
+async def email_stats(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    user: Optional[str] = None,
+    label: Optional[str] = None,
+    session: Session = Depends(require_auth),
+):
+    _ensure_email_analyzer_enabled()
+    params: Dict[str, Any] = {}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if user:
+        params["user"] = user
+    if label:
+        params["label"] = label
+    logger.info(
+        "[EMAIL] stats requested by %s params=%s",
+        getattr(session, "user_id", None),
+        params,
+    )
+    return await proxy_request(f"{RAG_URL}/email/stats", "GET", params=params)
+
+
+@app.post("/api/email/query")
+async def email_query(payload: Dict[str, Any], session: Session = Depends(require_auth)):
+    _ensure_email_analyzer_enabled()
+    logger.info(
+        "[EMAIL] query requested by %s filters=%s limit=%s offset=%s",
+        getattr(session, "user_id", None),
+        payload.get("filters"),
+        payload.get("limit"),
+        payload.get("offset"),
+    )
+    return await proxy_request(f"{RAG_URL}/email/query", "POST", json=payload)
+
+
+@app.post("/api/email/analyze/quick")
+async def email_analyze_quick(payload: Dict[str, Any], session: Session = Depends(require_auth)):
+    _ensure_email_analyzer_enabled()
+    logger.info(
+        "[EMAIL] quick analysis requested by %s question_len=%s",
+        getattr(session, "user_id", None),
+        len(payload.get("question", "")),
+    )
+    return await proxy_request(f"{RAG_URL}/email/analyze/quick", "POST", json=payload)
+
+
+@app.post("/api/email/analyze/gemma/quick")
+async def email_analyze_gemma_quick(payload: Dict[str, Any], session: Session = Depends(require_auth)):
+    """
+    Quick email analysis backed by Gemma.
+    - Body: { question: str(>=3), filters: object, max_emails?: int }
+    - Flow: query RAG for top emails, construct prompt, call Gemma /generate, return summary
+    """
+    _ensure_email_analyzer_enabled()
+    question = (payload.get("question") or "").strip()
+    if len(question) < 3:
+        raise HTTPException(status_code=422, detail=[{
+            "type": "string_too_short",
+            "loc": ["body", "question"],
+            "msg": "String should have at least 3 characters",
+            "input": question,
+            "ctx": {"min_length": 3}
+        }])
+
+    filters = payload.get("filters") or {}
+    max_emails = int(payload.get("max_emails") or 10)
+    max_emails = max(1, min(max_emails, 25))
+
+    logger.info(
+        "[EMAIL][GEMMA] quick requested by %s qlen=%s max_emails=%s",
+        getattr(session, "user_id", None), len(question), max_emails,
+    )
+
+    # Query RAG for matching emails
+    rag_query = {
+        "filters": filters,
+        "limit": max_emails,
+        "offset": 0,
+        "sort_by": "date",
+        "order": "desc",
+    }
+    rag_resp = await proxy_request(f"{RAG_URL}/email/query", "POST", json=rag_query)
+    items: List[Dict[str, Any]] = (rag_resp or {}).get("items") or []
+
+    # Build prompt with clipped email snippets
+    def clip(text: Optional[str], n: int = 800) -> str:
+        if not text:
+            return ""
+        text = str(text)
+        return text if len(text) <= n else text[: n - 1] + "…"
+
+    lines: List[str] = [
+        "You are a helpful assistant analyzing email threads.",
+        "Provide a concise, actionable answer to the user's question based on the emails.",
+        "If information is insufficient, say so clearly.",
+        "\nUser question:",
+        question,
+        "\nRelevant emails (most recent first):",
+    ]
+    for i, it in enumerate(items, 1):
+        date = it.get("date") or it.get("timestamp") or ""
+        subject = it.get("subject") or "(no subject)"
+        sender = it.get("from_addr") or it.get("from") or ""
+        body = clip(it.get("body") or it.get("snippet") or it.get("text"), 800)
+        lines.append(f"[{i}] {date} • {sender} • {subject}\n{body}")
+
+    lines.append("\nAnswer:")
+    prompt = "\n\n".join(lines)
+
+    # Call Gemma generate with a modest cap
+    headers = _service_jwt_headers()
+    gen_req = {
+        "prompt": prompt,
+        "max_tokens": int(payload.get("max_tokens") or 384),
+        "temperature": float(payload.get("temperature") or 0.4),
+        "top_p": 0.92,
+    }
+    summary_text, gen_resp = await _gemma_generate_with_fallback(gen_req, headers)
+
+    return {
+        "success": True,
+        "summary": summary_text.strip() or "",
+        "model": gen_resp.get("model") if isinstance(gen_resp, dict) else None,
+        "emails_used": len(items),
+    }
+
+
+@app.get("/api/email/analyze/stream")
+async def email_analyze_stream(
+    payload: str = Query(..., description="Base64 payload"),
+    session: Session = Depends(require_auth),
+):
+    _ensure_email_analyzer_enabled()
+    decoded_payload = _prepare_email_stream_payload(payload)
+    sanitized = base64.urlsafe_b64encode(json.dumps(decoded_payload).encode("utf-8")).decode("utf-8").rstrip("=")
+    logger.info(
+        "[EMAIL] stream requested by %s prompt_len=%s max_chunks=%s",
+        getattr(session, "user_id", None),
+        len(str(decoded_payload.get("prompt", ""))),
+        decoded_payload.get("max_chunks"),
+    )
+
+    headers = _service_jwt_headers()
+
+    async def streamer():
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "GET",
+                    f"{RAG_URL}/email/analyze/stream",
+                    params={"payload": sanitized},
+                    headers=headers,
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if line:
+                            yield line + "\n"
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[EMAIL] stream error user=%s detail=%s",
+                getattr(session, "user_id", None),
+                exc,
+            )
+            yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(streamer(), media_type="text/event-stream")
+
+
+@app.get("/api/email/analyze/gemma/stream")
+async def email_analyze_gemma_stream(
+    payload: str = Query(..., description="Base64 payload"),
+    session: Session = Depends(require_auth),
+):
+    """
+    Stream Gemma-backed email analysis over SSE.
+    - Payload: { prompt: str, filters: object, max_chunks?: int, max_emails?: int, analysis_id?: str }
+    Events: progress, note, summary, done
+    """
+    _ensure_email_analyzer_enabled()
+    decoded = _prepare_email_stream_payload(payload)
+    prompt = (decoded.get("prompt") or "").strip()
+    filters = decoded.get("filters") or {}
+    max_emails = int(decoded.get("max_emails") or 10)
+    max_emails = max(1, min(max_emails, 25))
+
+    logger.info(
+        "[EMAIL][GEMMA] stream requested by %s prompt_len=%s max_emails=%s",
+        getattr(session, "user_id", None), len(prompt), max_emails,
+    )
+
+    async def event_generator():
+        # Warmup note (do not block stream if warmup fails)
+        yield format_sse("progress", {"message": "Collecting email snippets"})
+        yield format_sse("note", {"message": f"Applying filters: {filters}"})
+
+        # Query RAG for candidate emails
+        rag_query = {
+            "filters": filters,
+            "limit": max_emails,
+            "offset": 0,
+            "sort_by": "date",
+            "order": "desc",
+        }
+        try:
+            rag_resp = await proxy_request(f"{RAG_URL}/email/query", "POST", json=rag_query)
+        except HTTPException as exc:  # surface upstream detail
+            detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc)}
+            yield format_sse("note", {"message": f"RAG query failed: {detail}"})
+            yield format_sse("done", {"error": True})
+            return
+
+        items: List[Dict[str, Any]] = (rag_resp or {}).get("items") or []
+        yield format_sse("progress", {"message": f"Found {len(items)} emails"})
+
+        # Helper to clip text
+        def clip(text: Optional[str], n: int = 800) -> str:
+            if not text:
+                return ""
+            text = str(text)
+            return text if len(text) <= n else text[: n - 1] + "…"
+
+        # Per-email pass (map)
+        per_results: List[str] = []
+        async with httpx.AsyncClient(timeout=None) as client:
+            for idx, it in enumerate(items, 1):
+                subject = it.get("subject") or "(no subject)"
+                sender = it.get("from_addr") or it.get("from") or ""
+                date = it.get("date") or it.get("timestamp") or ""
+                body = clip(it.get("body") or it.get("snippet") or it.get("text"), 800)
+                q = prompt or "Summarize key insights and action items from this email."
+                per_prompt = (
+                    f"You are analyzing a single email. Provide a brief answer to: {q}\n\n"
+                    f"From: {sender}\nDate: {date}\nSubject: {subject}\n\n"
+                    f"Body:\n{body}\n\n"
+                    f"Answer:"
+                )
+                gen_req = {
+                    "prompt": per_prompt,
+                    "max_tokens": 192,
+                    "temperature": 0.35,
+                    "top_p": 0.92,
+                }
+                try:
+                    text, _ = await _gemma_generate_with_fallback(gen_req, _service_jwt_headers())
+                except Exception as exc:  # noqa: BLE001
+                    yield format_sse("note", {"message": f"Gemma error on email {idx}: {exc}"})
+                    text = ""
+                snippet = text.strip()
+                if snippet:
+                    per_results.append(f"[{idx}] {subject}: {snippet}")
+                    yield format_sse("note", {"message": f"Analyzed email {idx}/{len(items)}"})
+                else:
+                    yield format_sse("note", {"message": f"No response for email {idx}/{len(items)}"})
+
+        # Reduce pass – overall answer
+        reduce_lines: List[str] = [
+            "You are an expert analyst. Combine the following per-email findings into a concise answer.",
+            f"User request: {prompt or '(general summary)'}",
+            "Findings:",
+            *per_results,
+            "\nFinal answer:",
+        ]
+        reduce_req = {
+            "prompt": "\n".join(reduce_lines),
+            "max_tokens": 384,
+            "temperature": 0.4,
+            "top_p": 0.92,
+        }
+        final_text, _ = await _gemma_generate_with_fallback(reduce_req, _service_jwt_headers())
+        final_text = (final_text or "").strip()
+        if final_text:
+            yield format_sse("summary", {"message": final_text})
+        else:
+            yield format_sse("summary", {"message": "No final summary produced."})
+
+        artifact_id = f"email-artifact-{uuid.uuid4().hex[:8]}"
+        yield format_sse("done", {"artifact_id": artifact_id})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/email/analyze/cancel")
+async def email_analyze_cancel(payload: Dict[str, Any], session: Session = Depends(require_auth)):
+    _ensure_email_analyzer_enabled()
+    logger.info(
+        "[EMAIL] cancel requested by %s analysis_id=%s",
+        getattr(session, "user_id", None),
+        payload.get("analysis_id"),
+    )
+    return await proxy_request(f"{RAG_URL}/email/analyze/cancel", "POST", json=payload)
+
 @app.post("/api/memory/create")
 async def memory_create(request: Dict[str, Any], session: Session = Depends(require_auth)):
     """
@@ -1642,6 +2383,38 @@ async def analytics_signals(
         query_params["metrics"] = metrics
     query_string = f"?{urlencode(query_params)}" if query_params else ""
     result = await proxy_request(f"{INSIGHTS_URL}/analytics/signals{query_string}", "GET")
+    return result
+
+
+@app.get("/api/analytics/segments")
+async def analytics_segments(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    speakers: Optional[str] = None,
+    emotions: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    order: str = "desc",
+    session: Session = Depends(require_auth)
+):
+    """Proxy segment drill-downs to the insights service."""
+    query_params: Dict[str, Any] = {}
+    if start_date:
+        query_params["start_date"] = start_date
+    if end_date:
+        query_params["end_date"] = end_date
+    if speakers:
+        query_params["speakers"] = speakers
+    if emotions:
+        query_params["emotions"] = emotions
+    if limit is not None:
+        query_params["limit"] = str(limit)
+    if offset:
+        query_params["offset"] = str(offset)
+    if order:
+        query_params["order"] = order
+    query_string = f"?{urlencode(query_params)}" if query_params else ""
+    result = await proxy_request(f"{INSIGHTS_URL}/analytics/segments{query_string}", "GET")
     return result
 
 @app.get("/api/transcripts/speakers")
@@ -1872,8 +2645,16 @@ async def analysis_archive(
 async def analysis_list(
     limit: int = 50,
     offset: int = 0,
+    scope: str = Query("user"),
     session: Session = Depends(require_auth)
 ):
+    scope_value = scope.lower()
+    include_all = scope_value == "all"
+    if include_all and not _is_admin(session):
+        raise HTTPException(status_code=403, detail="Admin scope required to view all artifacts")
+    if scope_value not in {"user", "all"}:
+        raise HTTPException(status_code=400, detail="Invalid scope value")
+
     params = []
     if limit:
         params.append(f"limit={limit}")
@@ -1907,14 +2688,22 @@ async def analysis_list(
             )
             raise
         logger.warning("[ANALYSIS-LIST] RAG 404 – using fallback store")
-        return _list_fallback_artifacts(limit, offset)
+        return _list_fallback_artifacts(limit, offset, session, include_all)
 
 
 @app.get("/api/analysis/{artifact_id}")
 async def analysis_get(
     artifact_id: str,
+    scope: str = Query("user"),
     session: Session = Depends(require_auth)
 ):
+    scope_value = scope.lower()
+    include_all = scope_value == "all"
+    if scope_value not in {"user", "all"}:
+        raise HTTPException(status_code=400, detail="Invalid scope value")
+    if include_all and not _is_admin(session):
+        raise HTTPException(status_code=403, detail="Admin scope required to view all artifacts")
+
     logger.info(
         "[ANALYSIS-GET] user=%s artifact_id=%s",
         getattr(session, "user_id", None),
@@ -1940,7 +2729,7 @@ async def analysis_get(
                 exc.status_code,
             )
             raise
-        fallback = _get_fallback_artifact(artifact_id)
+        fallback = _get_fallback_artifact(artifact_id, session, include_all)
         if fallback:
             return {"success": True, "artifact": fallback, "source": "gateway_fallback"}
         logger.error(
@@ -2449,3 +3238,67 @@ else:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+def _ensure_email_analyzer_enabled() -> None:
+    if not EMAIL_ANALYZER_ENABLED:
+        raise HTTPException(status_code=404, detail="Email analyzer disabled")
+
+
+def _prepare_email_stream_payload(raw: str) -> Dict[str, Any]:
+    if not raw:
+        raise HTTPException(status_code=400, detail="Missing payload")
+    padded = raw + "=" * (-len(raw) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid payload encoding") from exc
+    return decoded
+
+
+async def _gemma_generate_with_fallback(
+    body: Dict[str, Any],
+    headers: Optional[Dict[str, str]],
+    *,
+    fallback_suffix: str = "\n\nRespond with at least one clear sentence.",
+    min_temperature: float = 0.55,
+):
+    """Invoke Gemma /generate and retry once if no text is produced."""
+
+    async def _invoke(payload: Dict[str, Any]):
+        return await proxy_request(
+            f"{GEMMA_URL}/generate",
+            "POST",
+            json=payload,
+            extra_headers=headers,
+        )
+
+    def _extract_text(resp: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(resp, dict):
+            return ""
+        return (resp.get("text") or resp.get("response") or "").strip()
+
+    response = await _invoke(body)
+    text = _extract_text(response)
+    if text:
+        return text, response
+
+    retry_body = dict(body)
+    retry_body["prompt"] = body.get("prompt", "") + fallback_suffix
+    try:
+        retry_temp = float(retry_body.get("temperature", 0.4) or 0.4)
+    except Exception:
+        retry_temp = 0.4
+    retry_body["temperature"] = max(retry_temp, min_temperature)
+    retry_body.setdefault("top_p", 0.92)
+
+    try:
+        response = await _invoke(retry_body)
+        text = _extract_text(response)
+    except Exception:
+        text = ""
+
+    return text, response
+@app.get("/api/debug/transcripts/time-range")
+async def debug_transcript_time_range(session: Session = Depends(require_auth)):
+    """Expose RAG dataset coverage stats to the UI."""
+    logger.info("[DEBUG] transcript time range requested by %s", getattr(session, "user_id", None))
+    return await proxy_request(f"{RAG_URL}/debug/transcripts/time-range", "GET")

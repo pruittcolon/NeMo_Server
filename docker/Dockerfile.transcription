@@ -20,9 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
-COPY services/transcription-service/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies (lock file keeps pip layer deterministic)
+COPY services/transcription-service/requirements.lock /app/requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Pre-download NeMo Parakeet 0.6B model during build to avoid startup delay
 RUN python -c "from nemo.collections.asr.models import EncDecRNNTBPEModel; \
@@ -73,6 +73,3 @@ HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
 
 # Run service
 CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8003"]
-
-
-

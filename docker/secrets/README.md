@@ -16,8 +16,11 @@ Generate all required secrets before starting services:
 # Session encryption key
 openssl rand -base64 32 > session_key
 
-# JWT signing secret
-openssl rand -base64 32 > jwt_secret
+# JWT signing secrets (dual-key rotation ready)
+openssl rand -base64 32 > jwt_secret_primary
+# Seed previous + legacy files with the same value; update during rotation
+cp jwt_secret_primary jwt_secret_previous
+cp jwt_secret_primary jwt_secret
 
 # User database encryption key
 openssl rand -base64 32 > users_db_key
@@ -42,7 +45,7 @@ openssl rand -base64 16 > redis_password
 ### 3. External API Tokens (Optional)
 
 ```bash
-# Hugging Face token (for model downloads)
+# Hugging Face token (for model downloads – REQUIRED in production)
 # Get from: https://huggingface.co/settings/tokens
 echo "hf_your_token_here" > huggingface_token
 ```
@@ -59,7 +62,9 @@ echo "Generating Nemo Server secrets..."
 
 # Encryption keys
 openssl rand -base64 32 > session_key
-openssl rand -base64 32 > jwt_secret
+openssl rand -base64 32 > jwt_secret_primary
+cp jwt_secret_primary jwt_secret_previous
+cp jwt_secret_primary jwt_secret
 openssl rand -base64 32 > users_db_key
 openssl rand -base64 32 > rag_db_key
 
@@ -68,7 +73,7 @@ echo "nemo_user" > postgres_user
 openssl rand -base64 16 > postgres_password
 openssl rand -base64 16 > redis_password
 
-# Placeholder for HF token
+# Placeholder for HF token (leave empty in git, populate locally)
 echo "# Add your Hugging Face token here if needed" > huggingface_token
 
 # Set appropriate permissions
@@ -82,6 +87,8 @@ echo "  2. Keep these secrets secure"
 echo "  3. Never commit them to version control"
 ```
 
+> ⚠️ **Never** store the real token in `docker/.env`. The server loads it from `/run/secrets/huggingface_token`, and will refuse to start in production if the secret is missing.
+
 ## Usage in Docker Compose
 
 Secrets are mounted as files in containers at `/run/secrets/{secret_name}`:
@@ -91,26 +98,44 @@ services:
   api-gateway:
     secrets:
       - session_key
-      - jwt_secret
+      - jwt_secret_primary
+      - jwt_secret_previous
       - users_db_key
     # ...
 
 secrets:
   session_key:
     file: ./secrets/session_key
-  jwt_secret:
-    file: ./secrets/jwt_secret
+  jwt_secret_primary:
+    file: ./secrets/jwt_secret_primary
+  jwt_secret_previous:
+    file: ./secrets/jwt_secret_previous
 ```
 
 ## Reading Secrets in Code
 
 ```python
 from shared.security.secrets import get_secret
+from shared.security.service_auth import load_service_jwt_keys
 
 # Read secret from /run/secrets/{name}
 session_key = get_secret("session_key")
-jwt_secret = get_secret("jwt_secret")
+jwt_keys = load_service_jwt_keys("gateway")
 ```
+
+## JWT Secret Rotation Runbook
+
+1. **Stage the old key as previous**  
+   ```bash
+   cp docker/secrets/jwt_secret_primary docker/secrets/jwt_secret_previous
+   ```
+2. **Generate a new primary key**  
+   ```bash
+   openssl rand -base64 32 > docker/secrets/jwt_secret_primary
+   cp docker/secrets/jwt_secret_primary docker/secrets/jwt_secret  # keep legacy fallback aligned
+   ```
+3. **Redeploy services** so they read the updated secrets. Existing tokens signed with the old key continue to verify via `jwt_secret_previous`.
+4. **Monitor invalid-signature metrics** for at least one release window. Once confident no clients use the old key, repeat step 1 with the current primary to roll forward.
 
 ## Security Best Practices
 

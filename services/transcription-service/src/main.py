@@ -41,6 +41,9 @@ try:
 except ImportError:
     get_replay_protector = None
 
+from shared.config import SecurityConfig
+from shared.security.secrets import get_secret
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -64,7 +67,6 @@ EMOTION_SERVICE_URL = os.getenv("EMOTION_SERVICE_URL", "http://emotion-service:8
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://rag-service:8004")
 NEMO_MODEL_PATH = os.getenv("NEMO_MODEL_PATH", "")  # Local .nemo file path
 NEMO_MODEL_NAME = os.getenv("NEMO_MODEL_NAME", "nvidia/parakeet-rnnt-0.6b")  # Use smaller 0.6B model (fallback)
-HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN", "")
 JWT_ONLY = os.getenv("JWT_ONLY", "false").lower() in {"1", "true", "yes"}
 
 TRANSCRIBE_USE_VAD = os.getenv("TRANSCRIBE_USE_VAD", "true").lower() == "true"
@@ -80,7 +82,7 @@ MIN_SPEECH_SEC = float(os.getenv("VAD_MIN_SPEECH_SEC", "0.5"))
 MAX_SEGMENT_SEC = float(os.getenv("VAD_MAX_SEGMENT_SEC", "30.0"))
 SEGMENT_OVERLAP_SEC = float(os.getenv("VAD_SEGMENT_OVERLAP_SEC", "0.5"))
 DIARIZATION_SPK_MIN = int(os.getenv("DIARIZATION_SPK_MIN", "1"))
-DIARIZATION_SPK_MAX = int(os.getenv("DIARIZATION_SPK_MAX", "3"))
+DIARIZATION_SPK_MAX = int(os.getenv("DIARIZATION_SPK_MAX", "4"))
 ASR_BATCH_SIZE = int(os.getenv("ASR_BATCH_SIZE", "2"))
 CPU_ONLY_VAD_EMBEDS = os.getenv("CPU_ONLY_VAD_EMBEDS", "true").lower() == "true"
 DEFAULT_SPEAKER_EMBED_DIM = int(os.getenv("SPEAKER_EMBED_DIM_DEFAULT", "192"))
@@ -88,7 +90,14 @@ DEFAULT_SPEAKER_EMBED_DIM = int(os.getenv("SPEAKER_EMBED_DIM_DEFAULT", "192"))
 TRANSCRIBE_STRATEGY = os.getenv("TRANSCRIBE_STRATEGY", "rnnt").lower()
 PARAKEET_MODEL_ID = os.getenv("PARAKEET_MODEL_ID", "nvidia/parakeet-tdt-0.6b-v2")
 PARAKEET_CHUNK_DURATION = int(os.getenv("PARAKEET_CHUNK_DURATION", "300"))
-ENABLE_PYANNOTE = os.getenv("ENABLE_PYANNOTE", "true").lower() == "true"
+_enable_diarization_env = os.getenv("ENABLE_DIARIZATION")
+if _enable_diarization_env is None:
+    _enable_diarization_env = os.getenv("ENABLE_PYANNOTE", "true")
+ENABLE_DIARIZATION = _enable_diarization_env.lower() in {"1", "true", "yes"}
+if os.getenv("ENABLE_DIARIZATION") is None and os.getenv("ENABLE_PYANNOTE") is not None:
+    logger.warning(
+        "ENABLE_PYANNOTE is deprecated; please set ENABLE_DIARIZATION instead (still honoring legacy flag for now)."
+    )
 PYANNOTE_DEVICE = os.getenv("PYANNOTE_DEVICE", "cpu")
 _max_speakers_raw = os.getenv("PYANNOTE_MAX_SPEAKERS")
 try:
@@ -115,6 +124,37 @@ vad_device = "cpu"
 vad_window_stride = 0.01
 speaker_embedding_dim = 0
 parakeet_pipeline: Optional[ParakeetPipeline] = None
+
+
+def _load_huggingface_token() -> str:
+    """Load Hugging Face token from docker secrets or, in TEST_MODE, from env."""
+    token = (get_secret("huggingface_token") or "").strip()
+    if token:
+        logger.info("[HF] Loaded Hugging Face token from docker secret")
+        return token
+
+    env_token = os.getenv("HUGGINGFACE_TOKEN", "").strip()
+    if env_token:
+        if SecurityConfig.TEST_MODE:
+            logger.warning("[HF] Using HUGGINGFACE_TOKEN from environment (TEST_MODE only)")
+            return env_token
+        raise RuntimeError(
+            "[HF] HUGGINGFACE_TOKEN env var is set but docker secret is missing; "
+            "provide the token via docker/secrets/huggingface_token for production."
+        )
+
+    if SecurityConfig.TEST_MODE:
+        logger.warning("[HF] No Hugging Face token provided; feature downloads may be limited in TEST_MODE")
+        return ""
+
+    raise RuntimeError(
+        "[HF] Missing huggingface_token secret. Create docker/secrets/huggingface_token before starting."
+    )
+
+
+HUGGINGFACE_TOKEN = _load_huggingface_token()
+if HUGGINGFACE_TOKEN:
+    os.environ["HUGGINGFACE_TOKEN"] = HUGGINGFACE_TOKEN
 
 
 def _resample_audio(audio: np.ndarray, input_sr: int, target_sr: int = 16000) -> Tuple[np.ndarray, int]:
@@ -481,7 +521,7 @@ def load_nemo_models():
             parakeet_pipeline = ParakeetPipeline(
                 model_id=PARAKEET_MODEL_ID,
                 chunk_duration=PARAKEET_CHUNK_DURATION,
-                enable_diarization=ENABLE_PYANNOTE,
+                enable_diarization=ENABLE_DIARIZATION,
                 diarization_device=PYANNOTE_DEVICE,
                 diarization_num_speakers=PYANNOTE_MAX_SPEAKERS,
             )
@@ -783,12 +823,13 @@ async def lifespan(app: FastAPI):
     # Initialize service auth (Phase 3)
     global service_auth
     try:
-        from shared.security.secrets import get_secret
-        from shared.security.service_auth import get_service_auth
-        jwt_secret = get_secret("jwt_secret", default="dev_jwt_secret")
-        if jwt_secret:
-            service_auth = get_service_auth(service_id="transcription-service", service_secret=jwt_secret)
-            logger.info("✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected)")
+        from shared.security.service_auth import get_service_auth, load_service_jwt_keys
+        jwt_keys = load_service_jwt_keys("transcription-service")
+        service_auth = get_service_auth(service_id="transcription-service", service_secret=jwt_keys)
+        logger.info(
+            "✅ JWT service auth initialized (enforcing JWT-only, aud=internal, replay protected, keys=%s)",
+            len(jwt_keys),
+        )
     except Exception as e:
         logger.error(f"❌ JWT service auth initialization failed: {e}")
         raise

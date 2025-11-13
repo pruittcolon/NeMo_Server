@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: https:;">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta http-equiv="X-Frame-Options" content="DENY">
+  <title>Nemo Server - Email Analyzer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="assets/css/main.css?v=2024111201">
+  <link rel="stylesheet" href="assets/css/design-tokens.css?v=2024111201">
+  <link rel="stylesheet" href="assets/css/components.css?v=2024111201">
+  <link rel="stylesheet" href="assets/css/animations.css?v=2024111201">
+  <link rel="stylesheet" href="assets/css/analyzer.css?v=2024111201">
+  <style>
+    .chip-panel-meta {
+      margin: 0.15rem 0 0;
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+    }
+    .chip-group-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+    .chip-panel-actions {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .chip-toggle.chip-all {
+      background: linear-gradient(135deg, #6C63FF, #a78bfa);
+      border: none;
+      color: #0b0f1a;
+      font-weight: 600;
+      box-shadow: 0 8px 18px rgba(108, 99, 241, 0.45);
+    }
+    .email-author-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      border-radius: 999px;
+      border: 1px solid var(--glass-border, rgba(148,163,184,0.35));
+      padding: 0.35rem 0.9rem;
+      background: rgba(255,255,255,0.04);
+      color: var(--text-primary);
+      font-size: 0.9rem;
+      transition: all 0.2s ease;
+    }
+    .email-author-chip[aria-pressed="true"] {
+      background: rgba(37, 99, 235, 0.18);
+      border-color: rgba(37, 99, 235, 0.65);
+      color: #f8fafc;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.5);
+    }
+    .chip-count-pill {
+      font-size: 0.75rem;
+      padding: 0.1rem 0.55rem;
+      background: rgba(15,23,42,0.45);
+      border-radius: 999px;
+    }
+    .gpu-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      background: rgba(148,163,184,0.15);
+      color: var(--text-secondary);
+      margin-bottom: 0.85rem;
+    }
+    .gpu-status[data-variant="muted"] {
+      background: rgba(148,163,184,0.15);
+      color: var(--text-secondary);
+    }
+    .gpu-status[data-variant="success"] {
+      background: rgba(34,197,94,0.15);
+      color: #22c55e;
+      box-shadow: 0 10px 20px rgba(34,197,94,0.25);
+    }
+    .gpu-status[data-variant="warning"] {
+      background: rgba(251,191,36,0.15);
+      color: #eab308;
+    }
+    .gpu-status[data-variant="error"] {
+      background: rgba(248,113,113,0.15);
+      color: #f87171;
+    }
+  </style>
+  <script>
+    window.__ASSET_VERSION__ = '2024111201';
+  </script>
+  <script src="assets/js/api.js?v=2024111201"></script>
+  <script src="assets/js/app.js?v=2024110101"></script>
+  <script src="assets/js/auth.js?v=2024110101"></script>
+  <script src="assets/js/email_analyzer_ui.js?v=2024111201" defer></script>
+</head>
+<body class="gemma-theme">
+
+  <header class="glass-header">
+    <div class="container">
+      <div class="flex-between">
+        <div class="flex">
+          <h1 style="font-size: 1.5rem; margin: 0; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            ✉️ Email Analyzer
+          </h1>
+        </div>
+        <nav class="nav">
+          <a href="index.html" class="nav-link">Dashboard</a>
+          <a href="search.html" class="nav-link">Search</a>
+          <a href="emotions.html" class="nav-link">Emotions</a>
+          <a href="memories.html" class="nav-link">Memories</a>
+          <a href="gemma.html" class="nav-link">AI Insights</a>
+          <a href="email.html" class="nav-link active">Email</a>
+          <a href="settings.html" class="nav-link">Settings</a>
+        </nav>
+        <div class="flex" style="gap: 1rem; align-items: center;">
+          <span id="current-user" style="color: var(--text-secondary); font-size: 0.9rem;"></span>
+          <button id="logout-btn" class="glass-button" style="display:none;" title="Logout">
+            <i data-lucide="log-out" style="width:18px;height:18px;"></i>
+          </button>
+          <button class="glass-button" data-toggle-theme>
+            <i data-lucide="moon" style="width:18px;height:18px;"></i>
+          </button>
+          <div id="api-status"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" style="padding-top:2rem;padding-bottom:2rem;">
+    <section class="fade-in-up" style="text-align:center;margin-bottom:2rem;">
+      <h1 style="font-size:2.4rem;margin-bottom:0.5rem;">Email Intelligence</h1>
+      <p class="text-muted">GPU-backed insights for customer conversations, exec escalations, and compliance trails.</p>
+    </section>
+
+    <section class="grid grid-3 gemma-hero-stats fade-in-up" style="margin-bottom:1.5rem;">
+      <div class="stat-card">
+        <div class="stat-label">Messages (window)</div>
+        <div class="stat-value" id="email-stat-messages">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Threads</div>
+        <div class="stat-value" id="email-stat-threads">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">VIP Flags</div>
+        <div class="stat-value" id="email-stat-vip">0</div>
+      </div>
+    </section>
+
+    <section class="glass-card gemma-filter-panel fade-in-up" style="margin-bottom:1.5rem;">
+      <div class="gemma-filter-grid">
+        <div class="gemma-filter-column">
+          <div class="chip-panel-header" style="align-items:flex-start;">
+            <div>
+              <h4 style="margin-bottom:0.15rem;">Mailbox</h4>
+              <p class="chip-panel-meta">
+                <span id="email-authors-active">0</span>
+                /
+                <span id="email-authors-total">0</span>
+                authors active
+              </p>
+            </div>
+            <div class="chip-panel-actions">
+              <button class="chip-toggle chip-all" id="email-authors-all" type="button">All Authors</button>
+              <button class="chip-toggle" id="email-refresh" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="email-authors" class="chip-group chip-group-wrap"></div>
+          <select class="input" id="email-user-select" style="display:none;">
+            <option value="">All users</option>
+          </select>
+          <label style="display:block;margin-top:0.8rem;">Participants</label>
+          <input class="input" type="text" id="email-participants" placeholder="comma separated">
+        </div>
+        <div class="gemma-filter-column">
+          <div class="chip-panel-header">
+            <h4>Labels</h4>
+          </div>
+          <div id="email-labels" class="chip-group" style="flex-wrap:wrap;"></div>
+        </div>
+        <div class="gemma-filter-column">
+          <div class="chip-panel-header">
+            <h4>Window</h4>
+          </div>
+          <div class="grid" style="grid-template-columns: repeat(2, minmax(0,1fr)); gap:0.75rem;">
+            <div>
+              <label>Start</label>
+              <input type="date" class="input" id="email-start-date">
+            </div>
+            <div>
+              <label>End</label>
+              <input type="date" class="input" id="email-end-date">
+            </div>
+          </div>
+          <label style="display:block;margin-top:0.8rem;">Keywords</label>
+          <input type="text" class="input" id="email-keywords" placeholder="compliance, escalation">
+          <label class="checkbox" style="margin-top:0.6rem;">
+            <input type="checkbox" id="email-match-all">
+            <span>Match ALL keywords</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid grid-2" style="gap:1.5rem;">
+      <div class="glass-card">
+        <h3 style="margin-bottom:1rem;">Quick Summary</h3>
+        <div class="gpu-status" id="email-gpu-status" data-variant="muted">
+          GPU status: initializing…
+        </div>
+        <form id="email-summary-form" class="flex" style="align-items:flex-end; gap:0.75rem;">
+          <div style="flex:1;">
+            <label>Question</label>
+            <input class="input" id="email-question" placeholder="What changed this week?" required>
+          </div>
+          <button class="btn btn-primary" type="submit">Ask Gemma</button>
+        </form>
+        <div id="email-summary-result" class="text-muted" style="margin-top:0.75rem; min-height:3rem;"></div>
+      </div>
+      <div class="glass-card">
+        <h3 style="margin-bottom:1rem;">Streaming Deep Dive</h3>
+        <form id="email-stream-form" class="flex" style="align-items:flex-end; gap:0.75rem;">
+          <div style="flex:1;">
+            <label>Prompt</label>
+            <input class="input" id="email-stream-prompt" placeholder="Highlight risky escalations" required>
+          </div>
+          <button class="btn btn-ghost" type="submit">Start Stream</button>
+          <button class="btn btn-ghost" type="button" id="email-stream-stop">Stop</button>
+        </form>
+        <div class="analyzer-log" id="email-stream-log"></div>
+      </div>
+    </section>
+
+    <section class="glass-card" style="margin-top:1.5rem;">
+      <div class="flex-between" style="margin-bottom:1rem;">
+        <h3 style="margin:0;">Matching Emails</h3>
+        <div style="display:flex;gap:0.5rem;">
+          <select class="input" id="email-sort">
+            <option value="date:desc">Newest</option>
+            <option value="date:asc">Oldest</option>
+            <option value="sender:asc">Sender A-Z</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-responsive">
+        <table class="table" id="email-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Subject</th>
+              <th>From</th>
+              <th>Labels</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="4" style="text-align:center;">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>
